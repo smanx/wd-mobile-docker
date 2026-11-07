@@ -54,9 +54,9 @@ log "若依适配完成（外部 druid 配置 + 90sdk 最小库）"
 # aaa 认证通过后，会把 release_adb.server 表里的 ip/outer_ip 下发给客户端作为
 # 游戏线（gs）连接地址。原包默认 127.0.0.1，客户端会连自己的回环 → 卡"进入游戏"。
 # 改成客户端可达地址（CLIENT_IP）。同时补 gddb 库（aaa 启动会检查）。
-# 等待 mysql 就绪（临时 mysqld 可能刚起）
-for i in $(seq 1 30); do
-    mysqladmin --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" ping >/dev/null 2>&1 && break
+# 等待 mysql 真正可查询（含密码；仅 ping 不够，避免误判就绪）
+for i in $(seq 1 60); do
+    mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 && break
     sleep 1
 done
 if mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" \

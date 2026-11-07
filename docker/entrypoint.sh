@@ -1,65 +1,90 @@
 #!/bin/bash
-# wd-mobile-docker 容器入口�?#   1) 首次运行初始�?MySQL（装�?�?设密�?�?导入 11 个数据库 �?创建插件账号�?#   2) 之后交给 supervisord 管理 mysqld/redis/php-fpm/nginx
-#   3) AUTO_START_GAME=1 时顺带后台拉起游戏进程与代理（默认不拉，13GB 内存�?set -u
+# wd-mobile-docker container entrypoint
+#   1) First run: init MySQL, set root password, import 11 databases, create plugin account
+#   2) Then hand to supervisord (mysqld/redis/php-fpm/nginx)
+#   3) AUTO_START_GAME=1: also launch game processes & proxy in background
+set -u
 
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-j4Tj3vq1ih6}"
+CLIENT_IP="${CLIENT_IP:-172.29.220.175}"
 DATADIR=/var/lib/mysql
 SOCK=/var/lib/mysql/mysql.sock
 LOGDIR=/wd/logs
 mkdir -p "$DATADIR" "$LOGDIR" /var/run/mysqld
 chown -R mysql:mysql "$DATADIR" "$LOGDIR" /var/run/mysqld
-touch "$LOGDIR/mysqld_init.log" "$LOGDIR/mysqld.log" 2>/dev/null; chown mysql:mysql "$LOGDIR/mysqld_init.log" "$LOGDIR/mysqld.log" 2>/dev/null
+touch "$LOGDIR/mysqld_init.log" "$LOGDIR/mysqld.log" 2>/dev/null
+chown mysql:mysql "$LOGDIR/mysqld_init.log" "$LOGDIR/mysqld.log" 2>/dev/null
 
 log() { echo "[entrypoint] $(date '+%F %T') $*"; }
 
-# ---------- 临时启动 mysqld 用于初始�?----------
+# ---------- start temporary mysqld for initialization ----------
 if [ ! -d "$DATADIR/mysql" ]; then
-    log "初始�?MySQL 数据目录 (mysql_install_db)"
+    log "init MySQL data dir (mysql_install_db)"
     /usr/bin/mysql_install_db --user=mysql --datadir="$DATADIR" >"$LOGDIR/mysql_install.log" 2>&1
 fi
 
-log "启动临时 mysqld (初始化用)"
+log "start temporary mysqld (init)"
 /usr/bin/mysqld_safe --user=mysql --datadir="$DATADIR" --socket="$SOCK" \
     --skip-networking --log-error="$LOGDIR/mysqld_init.log" &
 INIT_PID=$!
 
-for i in $(seq 1 60); do
-    mysqladmin --socket="$SOCK" -u root ping >/dev/null 2>&1 && break
-    sleep 1
-    if [ "$i" -eq 60 ]; then
-        log "错误：mysqld 60 秒内未就绪，�?$LOGDIR/mysqld_init.log"
-        exit 1
+# wait until mysqld can actually execute SQL (ping alone is not enough on a
+# brand-new volume: ping may pass before it accepts queries, which made the
+# first DROP in loadsql fail and the import get skipped silently).
+ready=0
+for i in $(seq 1 120); do
+    if mysql --socket="$SOCK" -u root -e "SELECT 1" >/dev/null 2>&1; then
+        ready=1; break
     fi
+    sleep 1
 done
+if [ "$ready" != "1" ]; then
+    log "ERROR: mysqld not ready in 120s, see $LOGDIR/mysqld_init.log"
+    exit 1
+fi
 
 if [ ! -f /wd/.db_initialized ]; then
-    log "首次运行：设�?root 密码 �?导入数据�?�?创建插件账号"
+    log "first run: set root password -> import databases -> create plugin account"
     mysqladmin --socket="$SOCK" -u root password "$MYSQL_ROOT_PASSWORD" 2>/dev/null \
-        || log "root 密码已存在（跳过设置�?
-    /wd/loadsql.sh && touch /wd/.db_initialized
+        || log "root password already set (skip)"
+    # import must succeed; retry, and exit on repeated failure (never run degraded)
+    ok=0
+    for attempt in 1 2 3; do
+        if MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" /wd/loadsql.sh; then
+            ok=1; break
+        fi
+        log "loadsql failed (attempt $attempt), retry in 5s..."
+        sleep 5
+    done
+    if [ "$ok" != "1" ]; then
+        log "ERROR: database import failed repeatedly, exit"
+        exit 1
+    fi
+    touch /wd/.db_initialized
     mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" <<SQL
 GRANT ALL PRIVILEGES ON *.* TO 'W1G=1LA*3'@'%' IDENTIFIED BY 'Hrr1dkVU8S@W1G=LA*3HwMsqtrUZWQ72n' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
-    log "插件数据库账�?W1G=1LA*3 已创建（@'%'，供 Windows 插件�?3306 用）"
+    log "plugin DB account W1G=1LA*3 created (@'%', for Windows plugin on 3306)"
 else
-    log "数据库已初始化过，跳过导�?
+    log "database already initialized, skip import"
 fi
 
-# ---- 数据层适配（必须在临时 mysqld 存活期间执行�?---
-# �?release_adb.server 游戏服下发地址、补 gddb 库等。放在关闭临�?mysqld 之前�?/wd/adapt.sh
+# ---------- data-layer adaptation (must run while temp mysqld is alive) ----------
+# fix release_adb.server game-line address, create gddb, gen TLS cert, etc.
+/wd/adapt.sh
 
-log "关闭临时 mysqld"
+log "shutdown temporary mysqld"
 mysqladmin --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" shutdown >/dev/null 2>&1 \
     || kill "$INIT_PID" 2>/dev/null
 wait "$INIT_PID" 2>/dev/null
 
-# ---------- 可选：自动拉起游戏 ----------
+# ---------- optional: auto-start game ----------
 if [ "${AUTO_START_GAME:-0}" = "1" ]; then
-    log "AUTO_START_GAME=1 �?后台启动游戏进程 (qd) 与代�?(ry.sh)"
+    log "AUTO_START_GAME=1 -> launching game (qd) and proxy (ry.sh)"
     nohup /home/s1/qd >"$LOGDIR/qd.log" 2>&1 &
     (cd /home/daili && nohup sh ry.sh start >"$LOGDIR/ry.log" 2>&1)
 fi
 
-log "移交 supervisord: $*"
+log "hand over to supervisord: $*"
 exec "$@"
