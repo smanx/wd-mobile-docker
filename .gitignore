@@ -1,0 +1,16 @@
+# 构建上下文大头
+server/wd.zip
+
+# 客户端产物（太大不入库）
+client/*.apk
+client/*.apk.idsig
+client/*.png
+
+# 运行产物
+logs/
+*.log
+.env
+
+# 系统
+.DS_Store
+Thumbs.db

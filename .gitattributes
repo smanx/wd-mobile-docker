@@ -1,0 +1,6 @@
+# 统一 LF：shell 脚本 / Dockerfile / yum repo 必须保持 LF，
+# 否则 Windows 检出 CRLF 后 bash 会报 '\r' 错误
+* text=auto eol=lf
+*.bat text eol=crlf
+*.zip binary
+*.pak binary

@@ -1,0 +1,32 @@
+# CentOS 7 EOL 之后的源。默认阿里云镜像（国内/CI 稳定）；
+# 若你的网络访问阿里云慢，可换回官方 vault（把注释反转）。
+[base]
+name=CentOS-7.9.2009 - Base
+baseurl=https://mirrors.aliyun.com/centos-vault/7.9.2009/os/$basearch/
+#baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+enabled=1
+
+[updates]
+name=CentOS-7.9.2009 - Updates
+baseurl=https://mirrors.aliyun.com/centos-vault/7.9.2009/updates/$basearch/
+#baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+enabled=1
+
+[extras]
+name=CentOS-7.9.2009 - Extras
+baseurl=https://mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/
+#baseurl=http://vault.centos.org/7.9.2009/extras/$basearch/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+enabled=1
+
+[centosplus]
+name=CentOS-7.9.2009 - Plus
+baseurl=https://mirrors.aliyun.com/centos-vault/7.9.2009/centosplus/$basearch/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+enabled=0
