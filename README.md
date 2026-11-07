@@ -31,10 +31,7 @@ wd-mobile-docker/
 │   ├── redis.conf                 # Redis 6.2 配置
 │   └── start-services.sh          # 服务进程看护（mysqld/redis/php-fpm/nginx）
 ├── tests/
-│   ├── healthcheck.sh             # 全面体检（服务/端口/HTTP/游戏/数据配置/持久化）
-│   ├── smoke-test.sh              # 冒烟测试（构建后 15 项）
-│   ├── status.sh                  # 运行状态速查
-│   └── win-hosts.ps1              # （客户端联调用）Windows hosts 半自动辅助
+│   └── healthcheck.sh             # 一键体检（服务/端口/HTTP/游戏/数据配置/持久化）
 ├── .github/workflows/docker.yml   # GitHub Actions：自动构建并发布镜像
 ├── Makefile                       # image / run / status / stop / clean
 ├── run.sh                         # 一键运行
