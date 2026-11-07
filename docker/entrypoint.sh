@@ -84,12 +84,8 @@ mysqladmin --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" shutdown >/dev/null
     || kill "$INIT_PID" 2>/dev/null
 wait "$INIT_PID" 2>/dev/null
 
-# ---------- optional: auto-start game ----------
-if [ "${AUTO_START_GAME:-0}" = "1" ]; then
-    log "AUTO_START_GAME=1 -> launching game (qd) and proxy (ry.sh)"
-    nohup /home/s1/qd >"$LOGDIR/qd.log" 2>&1 &
-    (cd /home/daili && nohup sh ry.sh start >"$LOGDIR/ry.log" 2>&1)
-fi
+# NOTE: game startup (cd /home/s1 && ./qd) is handled in start-services.sh,
+# AFTER mysqld/redis/nginx are up (qd's services need MySQL). Do not start here.
 
 log "hand over to supervisord: $*"
 exec "$@"

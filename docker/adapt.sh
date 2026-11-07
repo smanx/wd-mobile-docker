@@ -50,28 +50,23 @@ SQL
 log() { echo "[entrypoint] $(date '+%F %T') $*"; }
 log "若依适配完成（外部 druid 配置 + 90sdk 最小库）"
 
-# ---- 游戏服下发地址修复（关键）----
-# aaa 认证通过后，会把 release_adb.server 表里的 ip/outer_ip 下发给客户端作为
-# 游戏线（gs）连接地址。原包默认 127.0.0.1，客户端会连自己的回环 → 卡"进入游戏"。
-# 改成客户端可达地址（CLIENT_IP）。同时补 gddb 库（aaa 启动会检查）。
-# 等待 mysql 真正可查询（含密码；仅 ping 不够，避免误判就绪）
+# ---- 游戏服下发地址：保持 127.0.0.1，绝不能改成外部 IP ----
+# 关键教训：release_adb.server 的 ip/outer_ip 是【服务端内部服务互联】用的地址。
+# gs/aaa/ccs/dba 等都在同一容器内，必须用 127.0.0.1 才能互通。若改成外部 IP，
+# gs 连不上前置服务，会卡在 "Try to obtain game_server_list" / "Missing config(telnet_port)"，
+# 游戏线端口 10201-10210 不监听，客户端显示“服务器维护中”。
+# 客户端连服务器用的是 nginx 端口(81/443) 和游戏端口(10201+)，与 server 表 ip 无关。
+# 因此这里【强制保持/恢复】为 127.0.0.1（兼容历史被误改的情况）。
 for i in $(seq 1 60); do
     mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 && break
     sleep 1
 done
 if mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" \
-    -e "UPDATE release_adb.server SET ip='$CLIENT_IP', outer_ip='$CLIENT_IP' WHERE ip IN ('127.0.0.1','')" 2>/dev/null; then
-    log "release_adb.server 游戏服地址 → $CLIENT_IP"
-else
-    log "警告: release_adb.server 地址更新失败"
+    -e "UPDATE release_adb.server SET ip='127.0.0.1', outer_ip='127.0.0.1'" 2>/dev/null; then
+    log "release_adb.server 内部服务地址确保为 127.0.0.1"
 fi
-# gddb 库（aaa 校验全局库；缺失会影响认证）
-if ! mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -N -e "SHOW DATABASES LIKE 'gddb'" 2>/dev/null | grep -q gddb; then
-    mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE gddb DEFAULT CHARACTER SET latin1" 2>/dev/null
-    mysqldump --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" release_gddb 2>/dev/null \
-        | mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" gddb 2>/dev/null
-    log "gddb 库已创建（release_gddb 副本）"
-fi
+# 注意：不要创建 gddb/gsdb 等短名库。原包 loadsql 导入的库即可让 aaa/gs 正常工作；
+# 额外建库反而会干扰 aaa 的架构探测（Unknown database 告警）。
 
 # ---- TLS 证书（容器每次重建后 /etc 会重置，这里保证证书存在）----
 if [ ! -f /etc/nginx/ssl/wd.crt ]; then
