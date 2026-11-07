@@ -30,8 +30,6 @@ wd-mobile-docker/
 │   ├── www.conf                   # PHP-FPM pool
 │   ├── redis.conf                 # Redis 6.2 配置
 │   └── start-services.sh          # 服务进程看护（mysqld/redis/php-fpm/nginx）
-├── tests/
-│   └── healthcheck.sh             # 一键体检（服务/端口/HTTP/游戏/数据配置/持久化）
 ├── .github/workflows/docker.yml   # GitHub Actions：自动构建并发布镜像
 ├── Makefile                       # image / run / status / stop / clean
 ├── run.sh                         # 一键运行
@@ -60,7 +58,7 @@ make run
 #     -e AUTO_START_GAME=1 wd-server:latest
 
 # 3) 体检
-make status      # 或 bash tests/healthcheck.sh
+make status      # 查看容器与各服务状态
 ```
 
 `AUTO_START_GAME=1` 会随容器自动拉起 14 个游戏进程；也可手动：

@@ -22,9 +22,10 @@ run:
 stop:
 	-docker stop $(CONTAINER) && docker rm $(CONTAINER)
 
-## 体检
+## 查看容器与服务状态
 status:
-	bash tests/healthcheck.sh
+	docker ps --filter name=$(CONTAINER)
+	-docker exec $(CONTAINER) bash -c 'pgrep -c magic_s1; mysqladmin -uroot -pj4Tj3vq1ih6 ping 2>/dev/null; curl -sk -o /dev/null -w "HTTP81=%{http_code}\n" http://127.0.0.1:81/reg.html'
 
 shell:
 	docker exec -it $(CONTAINER) bash
