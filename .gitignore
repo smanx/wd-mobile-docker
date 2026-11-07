@@ -12,6 +12,24 @@ logs/
 *.log
 .env
 
+# 排查/调试脚本（tests 下只在库保留 healthcheck.sh，其余临时脚本不提交）
+tests/diag-*
+tests/check-*
+tests/cmp-*
+tests/fix-*
+tests/gs-*
+tests/capture-*
+tests/trace-*
+tests/verify-*
+tests/restart-*
+tests/hotfix-*
+tests/really-*
+tests/recover-*
+tests/stop-*
+tests/fresh-*
+tests/test-*
+tests/inspect-*
+
 # 系统
 .DS_Store
 Thumbs.db

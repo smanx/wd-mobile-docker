@@ -28,12 +28,17 @@ log "start temporary mysqld (init)"
     --skip-networking --log-error="$LOGDIR/mysqld_init.log" &
 INIT_PID=$!
 
-# wait until mysqld can actually execute SQL (ping alone is not enough on a
-# brand-new volume: ping may pass before it accepts queries, which made the
-# first DROP in loadsql fail and the import get skipped silently).
+# wait until mysqld can actually execute SQL. Probe with BOTH no-password and
+# with-password root: on first init root has no password yet, but after a restart
+# the root password is already set, so a no-password-only probe would fail forever.
+probe_ready() {
+    mysql --socket="$SOCK" -u root -e "SELECT 1" >/dev/null 2>&1 && return 0
+    mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 && return 0
+    return 1
+}
 ready=0
 for i in $(seq 1 120); do
-    if mysql --socket="$SOCK" -u root -e "SELECT 1" >/dev/null 2>&1; then
+    if probe_ready; then
         ready=1; break
     fi
     sleep 1
