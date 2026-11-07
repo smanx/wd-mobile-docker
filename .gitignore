@@ -1,4 +1,5 @@
-# 构建上下文大头
+# 服务端原始包：以分卷形式入库（server/wd-parts/，每卷 <100MB）
+# server/wd.zip 是分卷合并后的完整包（构建前由 server/assemble-wdzip.sh 生成），不入库
 server/wd.zip
 
 # 客户端产物（太大不入库）

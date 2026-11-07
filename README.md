@@ -12,7 +12,10 @@
 
 ```
 wd-mobile-docker/
-├── server/wd.zip                  # 原始服务端包（~322MB，不做任何修改）
+├── server/
+│   ├── wd-parts/                  # 原始服务端包的分卷（wd.zip + wd.z01/z02/...，每卷 <100MB 入库）
+│   ├── assemble-wdzip.sh          # 构建前把分卷合并还原成 wd.zip（322MB）。CI/本地都靠它
+│   └── wd.zip                     # 合并产物（gitignore；由 assemble-wdzip.sh 生成）
 ├── client/                        # 已改好 IP、重签名的安卓客户端产物（不入库）
 ├── docker/
 │   ├── Dockerfile                 # 单容器全家桶：CentOS 7.6 + MySQL 5.6 + PHP 5.4 + Redis 6.2 + JDK 8 + 32位库
@@ -135,12 +138,24 @@ docker exec -it wd-server bash
 > 若客户端 IP 与容器网段不同，请把 `CLIENT_IP` 环境变量设为客户端可达的宿主机地址
 > （`docker run -e CLIENT_IP=<你的IP> ...`），`adapt.sh` 会用该地址下发区服。
 
+## 服务端原始包的存放（分卷）
+
+`server/wd.zip` 原包 322MB，超过 GitHub 100MB 单文件限制，无法直接入库。
+因此本项目把服务端包**解压后重新做成 zip 分卷**（`server/wd-parts/`，每卷 90MB），
+完整入库；构建镜像前由 `server/assemble-wdzip.sh` 合并还原成 `server/wd.zip`：
+
+```bash
+bash server/assemble-wdzip.sh   # 合并 wd-parts → server/wd.zip（已存在则跳过）
+```
+
+`make image` 和 GitHub Actions 都会自动执行这一步，无需手动操作。
+分卷已逐文件 MD5 校验，还原后与原包**完全一致**（629 个文件全匹配）。
+
 ## GitHub Actions
 
 `.github/workflows/docker.yml`：push 到 `main` 或手动触发时，用 buildx 构建 `linux/amd64`
-镜像并发布到 GHCR（`ghcr.io/<owner>/wd-mobile-docker`），无需额外 secrets。
-`server/wd.zip` 不入库（.gitignore），Actions 构建时需自备：通过 secret `WD_ZIP_URL` 下载
-（可用 release 附件或私有对象存储）。
+镜像并发布到 GHCR（`ghcr.io/<owner>/wd-mobile-docker`），无需任何 secrets——
+服务端分卷已在仓库里，workflow 会自动合并后构建。
 
 ## 注意事项
 

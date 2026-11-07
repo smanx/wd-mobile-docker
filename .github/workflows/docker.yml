@@ -20,22 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # server/wd.zip 不入库（.gitignore）。构建时从 secret WD_ZIP_URL 下载。
-      # 可以是任意可直链下载的对象存储 / release 附件。
-      - name: Download server package (wd.zip)
-        env:
-          WD_ZIP_URL: ${{ secrets.WD_ZIP_URL }}
+      # 服务端原始包以分卷形式入库（server/wd-parts/，每卷 <100MB，绕过 GitHub 单文件限制）。
+      # 构建前合并还原为 server/wd.zip（322MB），供 Dockerfile 的 COPY server/wd.zip 使用。
+      - name: Assemble server package (merge split parts → wd.zip)
         run: |
-          if [ -f server/wd.zip ]; then
-            echo "wd.zip 已存在（本地构建）"
-          elif [ -n "$WD_ZIP_URL" ]; then
-            mkdir -p server
-            curl -fL --retry 3 -o server/wd.zip "$WD_ZIP_URL"
-            echo "sha256:"; sha256sum server/wd.zip
-          else
-            echo "::error::缺少 server/wd.zip，且未配置 secret WD_ZIP_URL"
-            exit 1
-          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq zip unzip
+          bash server/assemble-wdzip.sh
+          ls -lh server/wd.zip
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

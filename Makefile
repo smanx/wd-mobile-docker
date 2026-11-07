@@ -3,8 +3,9 @@ CONTAINER := wd-server
 
 .PHONY: image run run-host status shell game-start game-stop stop clean
 
-## 构建镜像（约 10-20 分钟，视网络）
+## 构建镜像（自动先合并 server/wd-parts 分卷为 wd.zip，约 10-20 分钟）
 image:
+	bash server/assemble-wdzip.sh
 	docker build -f docker/Dockerfile -t $(IMAGE):latest .
 
 ## 运行（bridge + 端口映射 + 持久化数据卷）
