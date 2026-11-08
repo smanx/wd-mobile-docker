@@ -1,8 +1,7 @@
 #!/bin/bash
 # wd-mobile-docker container entrypoint
 #   1) First run: init MySQL, set root password, import 11 databases, create plugin account
-#   2) Then hand to supervisord (mysqld/redis/php-fpm/nginx)
-#   3) AUTO_START_GAME=1: also launch game processes & proxy in background
+#   2) Then hand to start-services (mysqld/redis/php-fpm/nginx + game services, always on)
 set -u
 
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-j4Tj3vq1ih6}"

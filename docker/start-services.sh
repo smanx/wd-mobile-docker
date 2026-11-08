@@ -1,9 +1,9 @@
 #!/bin/bash
 # Lightweight process supervision (replaces supervisor to avoid EPEL archive repos).
 # Starts mysql / redis / php-fpm / nginx, restarting any that exit.
-# Then (AUTO_START_GAME=1) starts the game services following the original
-# tutorial order, but waits until aaa is really listening on 10001 before
-# launching the gs game lines (gs depends on aaa to hand out the server list).
+# Then always starts the game services following the original tutorial order,
+# but waits until aaa is really listening on 10001 before launching the gs game
+# lines (gs depends on aaa to hand out the server list).
 cd /wd
 mkdir -p logs /var/run/mysqld
 chown -R mysql:mysql logs /var/run/mysqld
@@ -26,9 +26,8 @@ run_forever redis   /wd/redis6/bin/redis-server /etc/redis.conf --daemonize no &
 run_forever php-fpm /usr/sbin/php-fpm -F &
 run_forever nginx   /usr/sbin/nginx -g 'daemon off;' &
 
-# ---------- game services ----------
-if [ "${AUTO_START_GAME:-0}" = "1" ]; then
-    (
+# ---------- game services (always started) ----------
+(
         # wait for MySQL and Redis
         for i in $(seq 1 90); do
             mysqladmin --socket=/var/lib/mysql/mysql.sock -u root -p"$MPASS" ping >/dev/null 2>&1 && break
@@ -40,33 +39,45 @@ if [ "${AUTO_START_GAME:-0}" = "1" ]; then
         done
         echo "$(date '+%F %T') MySQL/Redis ready, starting game services" >> /wd/logs/game.log
 
-        # infrastructure first (no gs yet). aaa uses a retry loop because its
-        # first bind can hit a leftover TIME_WAIT socket -> "Bind is failed".
-        for s in dba ldba csa ccs dps msa mss ps sns spa tts; do
-            ( cd /home/s1/$s && exec sh ./run$s ) >>/wd/logs/game_$s.log 2>&1 &
-            sleep 1
-        done
-
-        # aaa: retry up to 5 times until it really listens on 10001
-        for attempt in 1 2 3 4 5; do
-            ( cd /home/s1/aaa && exec sh ./runaaa ) >>/wd/logs/game_aaa.log 2>&1 &
-            for i in $(seq 1 60); do
-                if cat /proc/net/tcp 2>/dev/null | awk 'NR>1{split($2,a,":");if(strtonum("0x"a[2])==10001 && $4=="0A")print 1}' | head -1 | grep -q 1; then
-                    echo "$(date '+%F %T') aaa ready on 10001 (attempt $attempt)" >> /wd/logs/game.log
-                    break 2
-                fi
-                sleep 2
+        # A magic_s1 service's first bind can transiently fail ("Bind is failed")
+        # while other services are starting. Generic helper: start a service and
+        # wait until its game port really listens; retry up to 5 times.
+        #   start_svc <dir> <script> <port|0>
+        start_svc() {
+            local dir="$1" script="$2" port="$3" attempt i
+            for attempt in 1 2 3 4 5; do
+                ( cd /home/s1/$dir && exec sh ./$script ) >>/wd/logs/game_$script.log 2>&1 &
+                if [ "$port" = "0" ]; then sleep 3; return 0; fi
+                for i in $(seq 1 45); do
+                    if cat /proc/net/tcp 2>/dev/null | awk -v P="$port" 'NR>1{split($2,a,":");if(strtonum("0x"a[2])==P && $4=="0A")print 1}' | head -1 | grep -q 1; then
+                        echo "$(date '+%F %T') $dir ready on $port (attempt $attempt)" >> /wd/logs/game.log
+                        return 0
+                    fi
+                    sleep 2
+                done
+                echo "$(date '+%F %T') $dir not ready (attempt $attempt), killing and retrying" >> /wd/logs/game.log
+                pkill -9 -f "start_${dir}" 2>/dev/null || true
+                sleep 8
             done
-            echo "$(date '+%F %T') aaa not ready (attempt $attempt), killing and retrying" >> /wd/logs/game.log
-            pkill -9 -f start_aaa 2>/dev/null || true
-            sleep 8
-        done
-        sleep 3
+            echo "$(date '+%F %T') $dir FAILED after 5 attempts, continuing" >> /wd/logs/game.log
+        }
 
-        # gs game lines
+        # dependency order: aaa -> dba/ldba -> csa -> ccs -> (gs lines) -> helpers
+        start_svc aaa runaaa 10001
+        start_svc dba rundba 10004
+        start_svc ldba runldba 10006
+        start_svc csa runcsa 10003
+        start_svc ccs runccs 10002
+
+        # gs game lines (aaa/dba/ldba/csa/ccs are all ready now)
         for n in "" 2 3 4 5 6 7 8 9 10; do
             ( cd /home/s1/gs && exec sh ./rungs$n ) >>/wd/logs/game_rungs$n.log 2>&1 &
             sleep 1
+        done
+
+        # helper services (no fixed game ports to probe)
+        for s in dps msa mss ps sns spa tts; do
+            start_svc $s run$s 0
         done
         echo "$(date '+%F %T') all game services started" >> /wd/logs/game.log
     ) >/wd/logs/qd.log 2>&1 &
@@ -79,6 +90,5 @@ if [ "${AUTO_START_GAME:-0}" = "1" ]; then
         done
         cd /home/daili && exec sh ry.sh start
     ) >/wd/logs/ry.log 2>&1 &
-fi
 
 wait

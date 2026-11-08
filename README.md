@@ -51,10 +51,9 @@ wd-mobile-docker/
 # 1) 拉取镜像
 docker pull ghcr.io/smanx/wd-mobile-docker:latest
 
-# 2) 运行（持久化数据卷 + 自动启动游戏；首次启动约 4~5 分钟完成全部初始化）
+# 2) 运行（持久化数据卷；游戏随容器自动启动，首次启动约 4~5 分钟完成全部初始化）
 docker run -d --name wd-server --restart unless-stopped --init --shm-size=1g \
   -v wd-mysql-data:/var/lib/mysql \
-  -e AUTO_START_GAME=1 \
   -e CLIENT_IP=<客户端可达的本机地址> \
   ghcr.io/smanx/wd-mobile-docker:latest
 ```
@@ -85,7 +84,7 @@ docker run -d --name wd-server --restart unless-stopped --init --shm-size=1g \
   -v wd-mysql-data:/var/lib/mysql \
   -p 81:81 -p 80:80 -p 443:443 -p 88:88 -p 9877:9877 -p 3306:3306 -p 6379:6379 \
   -p 10001-10310:10001-10310 \
-  -e AUTO_START_GAME=1 -e CLIENT_IP=<客户端可达的本机地址> \
+  -e CLIENT_IP=<客户端可达的本机地址> \
   ghcr.io/smanx/wd-mobile-docker:latest
 ```
 
@@ -95,7 +94,7 @@ Linux 宿主机对外开服时也可以直接 host 网络（性能略好，无�
 docker run -d --name wd-server --restart unless-stopped --init --shm-size=1g \
   --network host \
   -v wd-mysql-data:/var/lib/mysql \
-  -e AUTO_START_GAME=1 -e CLIENT_IP=<服务器公网IP> \
+  -e CLIENT_IP=<服务器公网IP> \
   ghcr.io/smanx/wd-mobile-docker:latest
 ```
 
@@ -139,7 +138,7 @@ make run
 make status      # 查看容器与各服务状态
 ```
 
-手动启动/停止游戏进程（一般不需要，`AUTO_START_GAME=1` 已自动处理）：
+游戏随容器自动启动（无需任何开关）。需要手动干预时：
 
 ```bash
 docker exec -it wd-server bash

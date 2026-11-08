@@ -21,8 +21,7 @@ FROM centos:7
 
 ARG MYSQL_ROOT_PASSWORD=j4Tj3vq1ih6
 ENV LANG=en_US.UTF-8 \
-    LC_ALL=en_US.UTF-8 \
-    AUTO_START_GAME=0
+    LC_ALL=en_US.UTF-8
 
 # ---------------------------------------------------------------------------
 # 1. 系统源：CentOS 7 已 EOL，官方 mirrorlist / vault 均不可靠（403/超时）。

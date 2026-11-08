@@ -15,5 +15,4 @@ exec docker run -d --name wd-server \
   -v wd-mysql-data:/var/lib/mysql \
   -p 81:81 -p 80:80 -p 443:443 -p 88:88 -p 9877:9877 -p 3306:3306 -p 6379:6379 \
   -p 10001-10310:10001-10310 \
-  -e AUTO_START_GAME=1 \
   wd-server:latest
