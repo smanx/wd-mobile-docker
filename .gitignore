@@ -1,18 +1,24 @@
 # 服务端原始包：以分卷形式入库（server/wd-parts/，每卷 <100MB）
-# server/wd.zip 是分卷合并后的完整包（构建前由 server/assemble-wdzip.sh 生成），不入库
+# server/wd.zip 是分卷合并后的完整包（构建前用 server/assemble-wdzip.sh 生成），不入库
 server/wd.zip
 
-# 客户端产物（太大不入库）
+# 客户端产物（体积太大，不入库）
 client/*.apk
 client/*.apk.idsig
+client/*.ipa
 client/*.png
+
+# 脚本生成的临时/测试产物
+client/ipatest/
+__pycache__/
+*.pyc
 
 # 运行产物
 logs/
 *.log
 .env
 
-# 测试/排查脚本目录：整体忽略（不入库，本地调试用）
+# 测试/排查脚本目录：整体忽略（本地调试用，不入库）
 tests/
 
 # 系统

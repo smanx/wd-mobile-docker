@@ -202,6 +202,59 @@ docker exec -it wd-server bash
    否则模拟器连不到 WSL2 里的容器。
 4. 重装 APK 后若卡「热更/删除 APK」，多半是 hosts 未生效或 81 端口不可达导致版本检查失败。
 
+## 一键替换客户端 IP 脚本
+
+项目根目录的 [patch_client_ip.py](patch_client_ip.py) 可以一键替换并重新打包
+**安卓 APK 与 iOS IPA**（自动识别格式，纯 Python 标准库，无第三方依赖）。
+它把上面手工步骤里最容易出错的部分都固化了：
+
+| 平台 | 改哪些文件 | 长度要求 | 额外处理 |
+|---|---|---|---|
+| 安卓 APK | `assets/res/PlatformConfig.luac`（5 处）、`classes.dex`（7 处） | **必须等长**（原包 `49.235.188.189` / `172.29.220.175` 都是 14 字符） | 改 dex 后自动重算 DEX 头 `adler32` + `sha1`；可选自动 zipalign + apksigner v1/v2 重签 |
+| iOS IPA | `Payload/*.app/key.json`（1 处）、`res/PlatformConfig.luac`（5 处） | 可变长（都是明文文本，主 Mach-O 里无该硬编码） | 改完签名失效，需在 macOS 上用有效企业/开发者证书重签 |
+
+### 用法
+
+```bash
+# 单个文件（自动识别 apk / ipa，旧 IP 自动推断）
+python patch_client_ip.py --ip 172.29.220.175 wd.apk
+python patch_client_ip.py --ip 10.0.0.240 wd.ipa
+
+# 一次处理目录里所有 apk / ipa
+python patch_client_ip.py --ip 172.29.220.175 --dir "Z:/downloads/baiduyun/问道手游app"
+
+# 安卓要等长、iOS 不用：给安卓单独指定等长地址（当前环境的典型用法）
+python patch_client_ip.py --ip 10.0.0.240 --apk-ip 172.29.220.175 wd.apk wd.ipa
+
+# 安卓自动重签名（需要 Android SDK build-tools + JDK keytool）
+python patch_client_ip.py --ip 172.29.220.175 --sign yes wd.apk
+```
+
+常用参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--ip` | 新服务端 IP（iOS 用；安卓默认同值） |
+| `--apk-ip` | 安卓专用 IP，**长度必须与旧 IP 相同**（不等长脚本会直接拒绝并给建议） |
+| `--old-ip` | 旧 IP（默认自动推断：候选文件中出现次数最多的合法 IPv4） |
+| `--out-dir` | 输出目录，默认 `client/`；产物命名 `原名_新IP.apk/ipa` |
+| `--dir` | 批量处理目录内所有 `.apk` / `.ipa`（自动排除脚本自己生成的产物） |
+| `--scan-all` | 额外全量扫描小文件找硬编码 IP（默认只查教程列出的文件） |
+| `--sign` | 安卓重签：`auto`（默认，有 build-tools 就签）/ `yes` / `no` |
+| `--build-tools` / `--keystore` / `--storepass` / `--keypass` / `--alias` | 签名相关；keystore 不存在时脚本会用 keytool 自动生成 |
+
+### 注意事项
+
+- **安卓不等长替换会损坏包**：补零会把 URL 里的 `:81` 截断（实测过），脚本会拒绝执行。
+  解决：给安卓用一个等长的可达 IP（如 `172.29.220.175`、`100.100.100.10`），
+  或让服务器/宿主对该地址可达；iOS 不受此限制，可直接用 `10.0.0.240` 这类短 IP。
+- **改完必须重签**：安卓可用 `--sign yes`（或按脚本提示手动 zipalign + apksigner）；
+  iOS 只能在 macOS 上重签——原包 `embedded.mobileprovision` 是企业证书且 2024-11-21
+  已过期、IPA 内不含私钥，必须自备证书；且 iOS 应用无法在 Windows / 安卓模拟器运行。
+- 打包优先用系统 `zip` 做**增量更新**（只替换改动的条目，1.2GB 包几秒完成）；
+  没有 `zip`（如纯 Windows）时回退纯 Python 全量重写，慢一些但结果一致。
+- 输出的 APK/IPA 体积较大，`.gitignore` 已忽略 `client/*.apk` / `client/*.ipa`。
+
 ## 实测验证（在线镜像 + 全新数据卷，零干预）
 
 | 检查项 | 结果 |
