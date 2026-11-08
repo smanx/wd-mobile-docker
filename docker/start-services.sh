@@ -40,19 +40,26 @@ if [ "${AUTO_START_GAME:-0}" = "1" ]; then
         done
         echo "$(date '+%F %T') MySQL/Redis ready, starting game services" >> /wd/logs/game.log
 
-        # infrastructure first (no gs yet)
-        for s in aaa dba ldba csa ccs dps msa mss ps sns spa tts; do
+        # infrastructure first (no gs yet). aaa uses a retry loop because its
+        # first bind can hit a leftover TIME_WAIT socket -> "Bind is failed".
+        for s in dba ldba csa ccs dps msa mss ps sns spa tts; do
             ( cd /home/s1/$s && exec sh ./run$s ) >>/wd/logs/game_$s.log 2>&1 &
             sleep 1
         done
 
-        # wait until aaa really listens on 10001 (gs needs it for the server list)
-        for i in $(seq 1 90); do
-            if cat /proc/net/tcp 2>/dev/null | awk 'NR>1{split($2,a,":");if(strtonum("0x"a[2])==10001 && $4=="0A")print 1}' | head -1 | grep -q 1; then
-                echo "$(date '+%F %T') aaa ready on 10001, starting gs lines" >> /wd/logs/game.log
-                break
-            fi
-            sleep 2
+        # aaa: retry up to 5 times until it really listens on 10001
+        for attempt in 1 2 3 4 5; do
+            ( cd /home/s1/aaa && exec sh ./runaaa ) >>/wd/logs/game_aaa.log 2>&1 &
+            for i in $(seq 1 60); do
+                if cat /proc/net/tcp 2>/dev/null | awk 'NR>1{split($2,a,":");if(strtonum("0x"a[2])==10001 && $4=="0A")print 1}' | head -1 | grep -q 1; then
+                    echo "$(date '+%F %T') aaa ready on 10001 (attempt $attempt)" >> /wd/logs/game.log
+                    break 2
+                fi
+                sleep 2
+            done
+            echo "$(date '+%F %T') aaa not ready (attempt $attempt), killing and retrying" >> /wd/logs/game.log
+            pkill -9 -f start_aaa 2>/dev/null || true
+            sleep 8
         done
         sleep 3
 
