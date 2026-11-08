@@ -11,20 +11,22 @@
   # 一次处理整个目录里的所有 apk / ipa
   python patch_client_ip.py --ip 172.29.220.175 --dir "Z:/downloads/baiduyun/问道手游app"
 
-  # 安卓必须用等长 IP，iOS 可用任意长度；给安卓单独指定等长地址：
-  python patch_client_ip.py --ip 10.0.0.240 --apk-ip 172.29.220.175 --dir ./client
+  # 安卓 DEX 要求等长，iOS 可用任意长度；给安卓单独指定等长地址：
+  python patch_client_ip.py --ip 10.0.0.240 --apk-ip 172.29.220.175 wd.apk wd.ipa
 
   # 安卓自动重签名（需要 Android SDK build-tools + JDK keytool）
-  python patch_client_ip.py --ip 172.29.220.175 --sign yes wd.apk
+  python patch_client_ip.py --ip 10.0.0.240 --sign yes wd.apk
 
 实现要点（都是实测踩过的坑）：
-  1. 安卓 APK 里 IP 是编译进 luac / dex 的连续字符串，新 IP 必须【等长】
-     （原包 49.235.188.189 / 172.29.220.175 都是 14 字符）。不等长会破坏
-     http://<IP>:81 结构（补 \\0 会把 ":81" 截断）→ 脚本直接拒绝。
-  2. 改过 classes.dex 必须重算 DEX 头校验：
-     offset 8..12  = adler32(data[12:])
-     offset 12..32 = sha1(data[32:])
-     否则安卓安装时报 "INSTALL_FAILED_INVALID_APK / bad dex magic"。
+  1. 安卓 assets/res/PlatformConfig.luac 其实是【明文 Lua 源码】，可任意变长；
+     但 classes.dex 里的字符串常量由 string_data_item 紧密排列、由 map_list
+     固定分区，改动长度会破坏所有绝对偏移 —— Android 官方 dexdump 实测报
+     "String longer than indicated size" / "Non-zero padding before section"。
+     所以 DEX 内替换【必须等长】；不等长时脚本给出可直接执行的替代方案
+     （--apk-ip 指定等长的可达地址，如 172.29.220.175）。
+  2. 改过 classes.dex 必须重算 DEX 头校验，且【顺序】不能反：
+     先写 sha1(data[32:]) 到 12..32，再算 adler32(data[12:]) 写到 8..12
+     （checksum 覆盖范围包含 signature 字段）。否则报 bad dex magic。
   3. iOS IPA 的 key.json / res/PlatformConfig.luac 都是明文文本，可变长，
      主 Mach-O 可执行文件里没有该硬编码 IP；但改完【代码签名失效】，
      必须用 macOS + 有效企业/开发者证书重签才能装到 iOS 设备。
@@ -181,6 +183,27 @@ def infer_old_ip(candidates, kind):
 # 替换 + DEX 校验修复
 # ---------------------------------------------------------------------------
 
+def read_uleb128(data, pos):
+    result, shift = 0, 0
+    while True:
+        b = data[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return result, pos
+        shift += 7
+
+
+def write_uleb128(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
 def fix_dex_checksum(data: bytes) -> bytes:
     """重算 DEX 头的 sha1 与 adler32（改过 classes*.dex 必须调用）。
 
@@ -197,6 +220,104 @@ def fix_dex_checksum(data: bytes) -> bytes:
     return bytes(buf)
 
 
+def patch_dex_strings(dex: bytes, old_ip: bytes, new_ip: bytes):
+    """在 classes.dex 里等长替换字符串常量中的 IP。
+
+    做法：遍历 string_ids -> string_data_item（ULEB128 长度 + MUTF-8 内容 + 0x00），
+    对含 old_ip 的 item 原地写入等长的新内容，文件长度、所有绝对偏移、
+    map_list 分区全部不变，只重算 DEX 头校验。
+    返回 (新 dex, 改动的 item 数)；长度不等时抛 ValueError（见 build_changes 说明）。
+    """
+    buf = bytearray(dex)
+    if buf[:4] != b"dex\n":
+        return dex, 0
+    nids = struct.unpack_from("<I", buf, 56)[0]     # string_ids_size
+    idoff = struct.unpack_from("<I", buf, 60)[0]    # string_ids_off
+
+    targets = {}   # string_data_off -> (content, cstart, cend)
+    for i in range(nids):
+        try:
+            soff = struct.unpack_from("<I", buf, idoff + 4 * i)[0]
+            _size, cstart = read_uleb128(buf, soff)
+            cend = buf.find(0, cstart)
+            if cend < 0:
+                continue
+            content = bytes(buf[cstart:cend])
+            if old_ip in content:
+                targets[soff] = (content, cstart, cend)
+        except (IndexError, struct.error):
+            continue
+    if not targets:
+        return dex, 0
+
+    # 变长需要重排整个 DEX 的 string_data 区并修正 map_list / 所有绝对偏移，
+    # 这不是字节替换能做到的（Android 官方 dexdump 实测会拒绝）：
+    #   "String longer than indicated size" / "Non-zero padding before section"。
+    # 因此 DEX 内替换必须等长；给出可操作的替代方案。
+    if len(new_ip) != len(old_ip):
+        raise ValueError(
+            "安卓 APK 的 classes.dex 里 IP 是编译进 DEX 的【字符串常量】，"
+            "string_data_item 紧密排列并由 map_list 固定分区，"
+            "改长度会破坏所有偏移（dexdump 实测报错），所以 DEX 内替换必须等长。\n"
+            "  旧 IP %s 是 %d 字符，你的新 IP %s 是 %d 字符。\n"
+            "  解决（无需改动任何网络配置）：给安卓指定一个等长且客户端可达的地址，\n"
+            "  例如 172.29.220.175（14 字符，WSL 自带别名，实测模拟器可连通，\n"
+            "  与 10.0.0.240 是同一台机器、服务监听 0.0.0.0，效果完全一样）：\n"
+            "    python patch_client_ip.py --ip %s --apk-ip 172.29.220.175 wd.apk wd.ipa\n"
+            "  iOS 不受此限制，仍可用 %s。\n"
+            "  若确实需要任意长度，只能用 apktool/baksmali 重编译 dex（本脚本未内置）。"
+            % (old_ip.decode(), len(old_ip), new_ip.decode(), len(new_ip),
+               new_ip.decode(), new_ip.decode())
+        )
+
+    for off, (content, cstart, cend) in targets.items():
+        nc = content.replace(old_ip, new_ip)
+        item = write_uleb128(len(nc)) + nc + b"\x00"
+        orig_end = cend + 1                      # 原 item 结束（含 0x00 终止符）
+        need = orig_end - off
+        if len(item) > need:
+            raise ValueError("DEX 字符串写入越界（意外的长度膨胀）")
+        # 填充必须用 0x00：DEX 校验器（dexdump/ART）按"遇到 0x00 即字符串结束"
+        # 来判定实际长度，若用非 0 字节填充会把填充吞进字符串，报
+        # "String longer than indicated size"。0x00 填充既保持总长度/偏移不变，
+        # 又不会被算进字符串内容。
+        item += b"\x00" * (need - len(item))
+        buf[off:orig_end] = item
+
+    # DEX 规范要求 string_ids 按 UTF-16 字典序排列（用于二分查找）。
+    # 等长替换改了字符串内容，必须确认改动项与其邻居仍有序，否则生成坏包。
+    offsets = [struct.unpack_from("<I", buf, idoff + 4 * i)[0] for i in range(nids)]
+    changed_idx = [i for i, o in enumerate(offsets) if o in targets]
+
+    def string_at(off):
+        _sz, cs = read_uleb128(buf, off)
+        ce = buf.find(0, cs)
+        return bytes(buf[cs:ce])
+
+    for i in changed_idx:
+        cur = string_at(offsets[i])
+        if i > 0:
+            prev = string_at(offsets[i - 1])
+            if cur < prev:
+                raise ValueError(
+                    "新 IP 破坏了 DEX string_ids 的字典序（规范要求有序）：\n"
+                    "  %r 排在 %r 之前，但索引在其后。\n"
+                    "  请换一个字典序合适的等长 IP（如 172.29.220.175），"
+                    "或用 --apk-ip 单独指定；任意长度需重编译 dex。" % (cur, prev)
+                )
+        if i + 1 < nids:
+            nxt = string_at(offsets[i + 1])
+            if cur > nxt:
+                raise ValueError(
+                    "新 IP 破坏了 DEX string_ids 的字典序（规范要求有序）：\n"
+                    "  %r 排在 %r 之后，但索引在其前。\n"
+                    "  请换一个字典序合适的等长 IP（如 172.29.220.175），"
+                    "或用 --apk-ip 单独指定；任意长度需重编译 dex。" % (cur, nxt)
+                )
+
+    return fix_dex_checksum(bytes(buf)), len(targets)
+
+
 def build_changes(candidates, kind, old_ip: bytes, new_ip: bytes):
     """返回 (changes: dict[name]=bytes, report: list[str])；失败抛 ValueError。"""
     changes = {}
@@ -205,19 +326,11 @@ def build_changes(candidates, kind, old_ip: bytes, new_ip: bytes):
         n = data.count(old_ip)
         if n == 0:
             continue
-        if kind == "android" and len(new_ip) != len(old_ip):
-            raise ValueError(
-                "安卓 APK 要求等长替换：旧 IP %s(%d字符) / 新 IP %s(%d字符)。\n"
-                "  dex/luac 里的 IP 是编译进连续字符串的，补零会把 URL 里的 ':81' 截断。\n"
-                "  解决：用一个等长的可达 IP（如 172.29.220.175 / 100.100.100.10），\n"
-                "  或者用 --apk-ip 单独给安卓指定等长地址（iOS 不受此限制）。"
-                % (old_ip.decode(), len(old_ip), new_ip.decode(), len(new_ip))
-            )
-        new_data = data.replace(old_ip, new_ip)
-        if ANDROID_DEX_RE.match(name):
-            new_data = fix_dex_checksum(new_data)
-            report.append(f"  {name}: {n} 处 (已重算 DEX adler32/sha1)")
+        if kind == "android" and ANDROID_DEX_RE.match(name):
+            new_data, items = patch_dex_strings(data, old_ip, new_ip)
+            report.append(f"  {name}: {n} 处 (DEX {items} 个字符串常量原地替换 + 校验重算)")
         else:
+            new_data = data.replace(old_ip, new_ip)
             report.append(f"  {name}: {n} 处")
         changes[name] = new_data
     return changes, report
@@ -242,7 +355,8 @@ def repack_with_zip(src: Path, dst: Path, changes):
                 # 让 mtime 新于 zip 内条目，确保 zip 一定替换
                 os.utime(p, None)
             cmd = ["zip", "-q", str(dst)] + list(changes.keys())
-            r = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True)
+            r = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
             if r.returncode != 0:
                 warn("zip 增量更新失败，回退纯 Python 重写: " + r.stderr.strip()[:200])
                 return False
@@ -361,12 +475,17 @@ def sign_apk(apk: Path, args):
         "--v1-signing-enabled", "true", "--v2-signing-enabled", "true",
         "--out", str(signed), str(aligned),
     ], check=True, capture_output=True)
-    r = subprocess.run([apksigner, "verify", str(signed)], capture_output=True, text=True)
+    r = subprocess.run([apksigner, "verify", str(signed)],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
-        raise RuntimeError("apksigner verify 失败: " + r.stderr.strip()[:200])
+        raise RuntimeError("apksigner verify 失败: " + (r.stderr or "")[:200])
     shutil.move(str(signed), str(apk))
     aligned.unlink(missing_ok=True)
-    log("  签名验证通过 ✓")
+    # apksigner 会在 --out 旁边生成 v2/v3 的 .idsig 文件，一并清掉
+    for leftover in apk.parent.glob(apk.stem + ".signed.apk.idsig"):
+        leftover.unlink(missing_ok=True)
+    log("  签名验证通过 OK")
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +601,7 @@ def main():
     ap.add_argument("files", nargs="*", help="要处理的 .apk / .ipa 文件")
     ap.add_argument("--dir", help="目录：自动处理其中所有 .apk / .ipa")
     ap.add_argument("--ip", required=True, help="新的服务端 IP（iOS 及安卓默认值）")
-    ap.add_argument("--apk-ip", help="安卓专用 IP：长度必须与旧 IP 相同（默认同 --ip）")
+    ap.add_argument("--apk-ip", help="安卓专用 IP：必须等长（默认同 --ip）；DEX 内的 IP 无法变长替换")
     ap.add_argument("--old-ip", help="旧 IP（默认自动推断出现次数最多的那个）")
     ap.add_argument("--out-dir", default="client", help="输出目录（默认 client/）")
     ap.add_argument("--scan-all", action="store_true",

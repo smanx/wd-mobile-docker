@@ -184,9 +184,10 @@ docker exec -it wd-server bash
 
 客户端 APK 里硬编码了服务器地址，需要改 IP 并重签名（`client/` 目录是改好的产物）：
 
-1. **APK 内 IP 替换**：`assets/res/PlatformConfig.luac`（5 处）与 `classes.dex`（7 处）
-   里的旧 IP 替换为你的服务器地址。**替换必须等长**（dex/luac 里是连续字符串，
-   例如 `49.235.188.189` → `172.29.220.175` 都是 14 字符），改完重算 dex 校验并重签名。
+1. **APK 内 IP 替换**：`assets/res/PlatformConfig.luac`（5 处，明文）与 `classes.dex`（7 处）
+   里的旧 IP 替换为你的服务器地址。**DEX 内必须等长且保持字典序**（原因见下方
+   「为什么安卓必须等长」，例如 `49.235.188.189` → `172.29.220.175` 都是 14 字符），
+   改完重算 dex 校验并重签名。推荐直接用 `patch_client_ip.py` 自动完成。
 2. **SDK 域名劫持**：账密登录走雷霆 SDK 的 `https://loginali.leiting1.com` 等域名，
    需要把这些域名解析到你的服务器（nginx 已带对应证书 SAN）。模拟器 root 后改 hosts：
 
@@ -210,7 +211,7 @@ docker exec -it wd-server bash
 
 | 平台 | 改哪些文件 | 长度要求 | 额外处理 |
 |---|---|---|---|
-| 安卓 APK | `assets/res/PlatformConfig.luac`（5 处）、`classes.dex`（7 处） | **必须等长**（原包 `49.235.188.189` / `172.29.220.175` 都是 14 字符） | 改 dex 后自动重算 DEX 头 `adler32` + `sha1`；可选自动 zipalign + apksigner v1/v2 重签 |
+| 安卓 APK | `assets/res/PlatformConfig.luac`（5 处，明文 Lua）、`classes.dex`（7 处） | **DEX 内必须等长且保持字典序**（详见下方「为什么等长」） | 改 dex 后自动重算 DEX 头 `adler32` + `sha1`、校验 `string_ids` 排序；可选自动 zipalign + apksigner v1/v2 重签 |
 | iOS IPA | `Payload/*.app/key.json`（1 处）、`res/PlatformConfig.luac`（5 处） | 可变长（都是明文文本，主 Mach-O 里无该硬编码） | 改完签名失效，需在 macOS 上用有效企业/开发者证书重签 |
 
 ### 用法
@@ -223,7 +224,7 @@ python patch_client_ip.py --ip 10.0.0.240 wd.ipa
 # 一次处理目录里所有 apk / ipa
 python patch_client_ip.py --ip 172.29.220.175 --dir "Z:/downloads/baiduyun/问道手游app"
 
-# 安卓要等长、iOS 不用：给安卓单独指定等长地址（当前环境的典型用法）
+# 典型用法：安卓用等长的可达地址，iOS 用真实的 10.0.0.240
 python patch_client_ip.py --ip 10.0.0.240 --apk-ip 172.29.220.175 wd.apk wd.ipa
 
 # 安卓自动重签名（需要 Android SDK build-tools + JDK keytool）
@@ -235,7 +236,7 @@ python patch_client_ip.py --ip 172.29.220.175 --sign yes wd.apk
 | 参数 | 说明 |
 |---|---|
 | `--ip` | 新服务端 IP（iOS 用；安卓默认同值） |
-| `--apk-ip` | 安卓专用 IP，**长度必须与旧 IP 相同**（不等长脚本会直接拒绝并给建议） |
+| `--apk-ip` | 安卓专用 IP：必须等长且保持 DEX 字典序（脚本会校验并给建议） |
 | `--old-ip` | 旧 IP（默认自动推断：候选文件中出现次数最多的合法 IPv4） |
 | `--out-dir` | 输出目录，默认 `client/`；产物命名 `原名_新IP.apk/ipa` |
 | `--dir` | 批量处理目录内所有 `.apk` / `.ipa`（自动排除脚本自己生成的产物） |
@@ -243,11 +244,38 @@ python patch_client_ip.py --ip 172.29.220.175 --sign yes wd.apk
 | `--sign` | 安卓重签：`auto`（默认，有 build-tools 就签）/ `yes` / `no` |
 | `--build-tools` / `--keystore` / `--storepass` / `--keypass` / `--alias` | 签名相关；keystore 不存在时脚本会用 keytool 自动生成 |
 
+### 为什么安卓必须等长（实测结论）
+
+不是脚本偷懒，而是 **DEX 二进制格式的硬约束**。曾尝试让脚本支持任意长度，
+用 Android SDK 官方 `dexdump` 验证时均被拒绝：
+
+| 尝试 | dexdump 报错 |
+|---|---|
+| 变短 IP + 非 0 字节填充 | `String longer than indicated size 20`（填充被吞进字符串） |
+| 变短 IP + `0x00` 填充 | `Non-zero padding 6 before section of type 4097`（破坏 data 区紧密分区） |
+| 等长但字典序变小（`100.100.100.10`） | `Out-of-order string_ids: 'http://140.207.168.45/g/d' then 'http://100.100.100.10:81'` |
+
+原因：`classes.dex` 里字符串是 `string_data_item`（ULEB128 长度 + MUTF-8 + `0x00`），
+**紧密排列**，`string_ids` 还要求按 **UTF-16 字典序**排序（供二分查找），
+`map_list` 把每个 section 的 offset/size 写死。改任何一个字符串的长度或排序，
+所有绝对偏移都要重排——这已经不是"字节替换"，而是**重编译 dex**
+（需 `apktool` / `baksmali+smali`），本脚本未内置。
+
+所以脚本做了两道校验：**等长** + **替换后 string_ids 仍有序**，任一不满足就拒绝，
+并打印一条可直接复制的替代命令。实测可用的组合：
+
+- 原包 `49.235.188.189`（14 字符）→ `172.29.220.175`（14 字符）：长度相同，
+  且 `http://172...` 排在相邻的 `http://140.207.168.45/g/d` 之后，字典序仍合法
+  → dexdump 结构校验通过，真机也验证过能进游戏。
+- `172.29.220.175` 是 WSL 自带的 IP 别名，与 `10.0.0.240` 是同一台机器、
+  服务监听 `0.0.0.0`，效果完全一样；因此用 `--apk-ip 172.29.220.175` 即可，
+  **不需要改动任何网络配置**。
+- iOS 是明文文本，不受限制，可直接用 `10.0.0.240`。
+
 ### 注意事项
 
-- **安卓不等长替换会损坏包**：补零会把 URL 里的 `:81` 截断（实测过），脚本会拒绝执行。
-  解决：给安卓用一个等长的可达 IP（如 `172.29.220.175`、`100.100.100.10`），
-  或让服务器/宿主对该地址可达；iOS 不受此限制，可直接用 `10.0.0.240` 这类短 IP。
+- **安卓不等长 / 字典序不合法的 IP 会被脚本明确拒绝**（附可执行命令），不会悄悄产出坏包。
+  要真正支持任意长度，只能用 apktool/baksmali 重编译 dex（可另行扩展）。
 - **改完必须重签**：安卓可用 `--sign yes`（或按脚本提示手动 zipalign + apksigner）；
   iOS 只能在 macOS 上重签——原包 `embedded.mobileprovision` 是企业证书且 2024-11-21
   已过期、IPA 内不含私钥，必须自备证书；且 iOS 应用无法在 Windows / 安卓模拟器运行。
@@ -466,7 +494,8 @@ bash server/assemble-wdzip.sh   # 合并 wd-parts → server/wd.zip（已存在�
 - SDK 登录域名（`*.leiting1.com`）必须劫持到服务器 IP，否则账密登录报「网络请求异常/账号不存在」。
 
 **客户端**
-- APK 里 IP 替换必须**等长**（dex/luac 是连续字符串，破坏长度会损坏文件），改完重签名；
+- APK 里 IP 替换在 DEX 内必须**等长且保持字典序**（详见「为什么安卓必须等长」），
+  推荐用 `patch_client_ip.py` 自动校验并打包，改完重签名；
 - 模拟器重装 APK / 清数据后，hosts 劫持会丢，需重新配置；
 - 出现「热更删除 APK 后不自动重启」：多为 81 端口 version.php 不可达（hosts/网络问题），
   修好网络重装 APK 即可。
