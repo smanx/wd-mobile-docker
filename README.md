@@ -276,6 +276,79 @@ docker exec -it wd-server bash
 
 > **客户端最小端口集：81、443、88、10001、10201-10210**（其余端口玩家用不到）。
 
+## 部署完成后的使用方法（来自原版搭建教程）
+
+以下信息来自 `手工端/搭建教程.txt`（原版 CentOS 7.6 + Windows Server 2012 手工架设教程），
+Docker 镜像已把服务端的部署步骤全部自动化，但**网页入口、账号、GM 码、客户端 IP 常量**
+这些信息仍以原教程为准。
+
+### 网页入口
+
+| 入口 | 地址 | 口令/邀请码 |
+|---|---|---|
+| 玩家注册 | `http://<服务器IP>:81/reg.html` | 邀请码 `A1` |
+| GM 后台 | `http://<服务器IP>:81/gm/gm.php` | GM 码 `51boshao.com` |
+| 玩家后台 | `http://<服务器IP>:81/gm/` | — |
+| CDK 兑换 | `http://<服务器IP>:81/gm/cdk` | GM 码 `51boshao.com` |
+| 代理后台（若依） | `http://<服务器IP>:88` | — |
+
+> `<服务器IP>` 用浏览器所在机器能访问到的地址（本机可 `127.0.0.1`，局域网/公网用
+> `CLIENT_IP`）。容器版的 81 端口由 nginx 直接提供站点，无需宝塔创建网站。
+
+### 数据库与账号数据
+
+| 项目 | 值 | 说明 |
+|---|---|---|
+| MySQL root 密码 | `j4Tj3vq1ih6` | 原教程要求统一改成这个 |
+| MySQL 最大连接数 | `30000` (`max_connections`) | 已在 `my.cnf` 固化 |
+| 业务库 | `release_adb/ddb/gddb/gsdb/ldb/mdb/sdb/sldb/tdb`、`account`、`wdgm`（共 11 个） | 首次启动由 `loadsql.sh` 自动导入 |
+| 插件数据库账号 | 用户 `W1G=1LA*3` / 密码 `Hrr1dkVU8S@W1G=LA*3HwMsqtrUZWQ72n` | 原教程授权给 Windows 插件机；镜像里已授予 `'%'` |
+| 预置测试账号 | `admin1` / `admin1` | 镜像自动写入 `account.account`，可直接在游戏里登录 |
+| 账号密码算法 | `strtoupper(md5(账号 + strtoupper(md5(密码)) + "xiaowu2023"))` | 注册接口写入、SDK 登录校验都用这个 |
+| Windows 插件库 | 库名 `plugin`，导入 `plugin.sql` | 易语言插件专用，在 Windows 侧建，不进 Linux 容器 |
+
+连接示例（容器内或映射了 3306 的宿主机上）：
+
+```bash
+mysql -h127.0.0.1 -P3306 -u root -pj4Tj3vq1ih6
+```
+
+### 原教程的手工运维命令（Docker 版已自动处理，供对照）
+
+| 原教程步骤 | Docker 镜像里的对应行为 |
+|---|---|
+| `cd /home/s1 && ./qd`（启动游戏，需 13G 内存） | 随容器自动启动，且按依赖顺序 + 端口就绪重试 |
+| `cd /home/daili && sh ry.sh restart`（启动代理） | 随容器自动启动 |
+| `cd /home/s1 && ./stop`（关闭游戏） | 直接 `docker stop wd-server` 即可 |
+| `find /home -type d -name "log" -exec rm -r {} +`（清理日志） | 日志统一输出到 `/wd/logs/`，按需清理 |
+| `find /home /www/wwwroot -type f ... sed -i s/114.132.177.234/你的IP/` | 构建期已全局替换，运行期由 `adapt.sh` 改 `server` 表与 `dist.lua` |
+| 宝塔里建站点 `ip:81` 指向 `/www/wwwroot/game` | `nginx.conf` 已配好，无需宝塔 |
+| 宝塔放行 1-65535、关防火墙 `systemctl stop firewalld` | 容器无 firewalld；宿主机/安全组按需放行（见端口表） |
+| `chmod -R 777 /home/ /www/wwwroot/`、`mv /home/qz /bin` | 构建期已处理 |
+
+### 客户端与其它数据（原教程）
+
+- **需要替换的硬编码 IP 常量**：服务端文件里是 `114.132.177.234`（原教程让你改成服务器 IP）；
+  客户端 APK 里是 `49.235.188.189`（改成 Linux 服务器 IP）。两者是不同的值，别改混。
+- **服务端需手工改 IP 的文件**（原版教程列出，Docker 版已自动处理）：
+  - `/www/wwwroot/game/wd/110001_config_20190415.json`（原教程说要"配合解密工具修改"）
+  - `patch.zip` 内 `patch/dist.lua`（原教程要求改成 **WIN 系统服务器 IP**）
+  - `patch.zip` 内 `patch/patch_url.lua`、`patch/patch_url_ats.lua`
+- **安卓客户端**：`assets/res/PlatformConfig.luac`、`classes.dex`（反编译后批量替换），
+  替换后需重算 dex 校验并重签名；详见本文件「客户端接入」章节。
+- **iOS 客户端**：需要企业签名才能进游戏，替换
+  `Payload/AsktaoMobile iOS.app/key.json` 与
+  `Payload/AsktaoMobile iOS.app/res/PlatformConfig.luac`。
+- **Windows 插件端**（易语言，不能进 Linux 容器）：解压 `插件.zip`，安装常用运行库合集 /
+  N++ / E2EE.ODBC / N11 数据库管理工具；改 `插件/Config.data` 第 38 行（插件 IP = WIN 服务器
+  IP）、第 48 行（主服务器 IP = Linux 服务器 IP）；用 N11 连接数据库后建 `plugin` 库、导入
+  `plugin.sql`，最后运行「周年插件稳定运行.exe」→ 链接数据库 → 启动插件。
+- **原环境版本**：nginx-1.18 / MySQL-5.6 / PHP-5.4 / Redis-6.2；测试系统 CentOS 7.6 +
+  Windows Server 2012；游戏进程原教程要求 ≥13G 内存（不够就加虚拟内存）。
+- **原包出处**：源码屋 `www.51boshao.com`，默认解压密码 `www.51boshao.com`，交流群
+  `131646129`。原教程声明**仅供单机研究学习、勿用于商业用途、下载后 24 小时内删除**，
+  本项目沿用同样的定位。
+
 ## 服务端原始包的存放（分卷）
 
 `server/wd.zip` 原包 322MB，超过 GitHub 100MB 单文件限制，无法直接入库。
@@ -346,6 +419,10 @@ bash server/assemble-wdzip.sh   # 合并 wd-parts → server/wd.zip（已存在�
   修好网络重装 APK 即可。
 
 **其他**
-- Windows 侧「插件.zip」是易语言程序，不能进 Linux 容器，按原架构放在 Windows 机器上；
+- Windows 侧「插件.zip」是易语言程序，不能进 Linux 容器；其配置（`Config.data` 的
+  插件 IP / 主服务器 IP）、`plugin` 库与 `plugin.sql` 导入等详见
+  「部署完成后的使用方法 → 客户端与其它数据」章节；
+- 注册邀请码 `A1`、GM 码 `51boshao.com`、数据库 root 密码 `j4Tj3vq1ih6` 等
+  原版数据详见「部署完成后的使用方法」章节；
 - 本项目是**移动端**（安卓 APK）；PC 端不在本项目范围内；
 - 仅供学习研究，请勿用于商业用途。
