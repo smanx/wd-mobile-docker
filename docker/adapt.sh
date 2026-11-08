@@ -3,7 +3,8 @@
 # 1) 覆盖 jar 内数据库密码（Spring Boot 外部配置）
 # 2) 建 90sdk 最小库（若依主数据源）
 # 3) 生成 TLS 自签证书（81/443 分流的 https 后端用）
-# 4) 删除 nginx 包自带的 default.conf（listen 80 会与 stream 分流冲突）
+# 4) 重写 SDK 登录配置 SdkConfig（DES 密文，按 CLIENT_IP）
+# 5) 删除 nginx 包自带的 default.conf（listen 80 会与 stream 分流冲突）
 # 注意：mcrypt 需在镜像里装好（Dockerfile php-mcrypt），此处只做配置层适配
 set -u
 
@@ -99,6 +100,32 @@ if [ -f /www/wwwroot/game/atm/g-bits/patch.zip ]; then
         log "dist.lua 区服地址 → $CLIENT_IP:10001"
     fi
     cd /wd
+fi
+
+# ---- SDK 登录地址：SdkConfig（DES 加密，Dockerfile 的明文全局替换改不到）----
+# 客户端 com.leiting.sdk.SdkConfigManager 读取 /wd/110001_config_*.json 的 SdkConfig，
+# 用 DES/ECB/PKCS5 解密（密钥取 "548711fdc20a2129" 的前 8 字节 "548711fd"），
+# 取 loginUrl / accountUrl / kernelUrl / ... 作为账密登录、实名、支付等请求地址。
+# 原包密文里写死的是原打包者服务器 IP 114.132.177.234；Dockerfile 里针对明文的
+# 全局替换碰不到密文，不处理的话 SDK 会连死地址，再回退到
+# https://loginali.leiting1.com —— 这才需要改模拟器 hosts 才能登录。
+# 这里按 CLIENT_IP 重写并重新加密。客户端还会校验
+# token = md5(SdkConfig 密文 hex + "leiting")，必须一起重算，否则配置被丢弃。
+SDK_CFG=/www/wwwroot/game/wd/110001_config_20190415.json
+DES_KEY=3534383731316664   # "548711fd" 的 ASCII hex
+if [ -f "$SDK_CFG" ] && command -v openssl >/dev/null 2>&1; then
+    php -r '$j=json_decode(file_get_contents($argv[1]),true); if (!isset($j["SdkConfig"])) exit(1); file_put_contents($argv[2], hex2bin($j["SdkConfig"]));' \
+        "$SDK_CFG" /tmp/wdsdk.bin 2>/dev/null
+    if [ -s /tmp/wdsdk.bin ] && \
+       openssl enc -d -des-ecb -K "$DES_KEY" -in /tmp/wdsdk.bin -out /tmp/wdsdk.txt 2>/dev/null; then
+        # 明文里所有 http://<IPv4>:<port> 的主机部分统一换成 CLIENT_IP（端口保留）
+        sed -i -E "s#http://[0-9]{1,3}(\.[0-9]{1,3}){3}:([0-9]+)#http://$CLIENT_IP:\2#g" /tmp/wdsdk.txt
+        openssl enc -e -des-ecb -K "$DES_KEY" -in /tmp/wdsdk.txt -out /tmp/wdsdk_new.bin 2>/dev/null
+        php -r '$h=bin2hex(file_get_contents($argv[1])); file_put_contents($argv[2], json_encode(array("token"=>md5($h."leiting"), "SdkConfig"=>$h)));' \
+            /tmp/wdsdk_new.bin "$SDK_CFG"
+        log "SdkConfig SDK 登录地址 → $CLIENT_IP（token 已重算，无需改 hosts）"
+    fi
+    rm -f /tmp/wdsdk.bin /tmp/wdsdk.txt /tmp/wdsdk_new.bin
 fi
 
 # ---- TLS 证书（容器每次重建后 /etc 会重置，这里保证证书存在）----

@@ -188,43 +188,24 @@ docker exec -it wd-server bash
    里的旧 IP 替换为你的服务器地址。DEX 内改长度需重编译（脚本会自动用
    baksmali/smali 处理，因此 `10.0.0.240` 这类短 IP 也能直接写进去），改完重签名。
    推荐直接用 `patch_client_ip.py` 自动完成。
-2. **SDK 域名劫持（最容易复发）**：账密登录走雷霆 SDK 的
-   `https://loginali.leiting1.com` 等域名，必须把这些域名解析到你的服务器
-   （nginx 自签证书已含全部 17 个域名的 SAN）。注意 **Windows 的 hosts 文件对安卓模拟器无效**，
-   模拟器读的是自己的 `/system/etc/hosts`。
+2. **SDK 登录地址：不需要改 hosts**。账密登录的地址不在 APK 里，而在服务端下发的
+   `/wd/110001_config_20190415.json` 的 `SdkConfig` 字段（DES 加密）。镜像的
+   [adapt.sh](docker/adapt.sh) 每次启动会按 `CLIENT_IP` 解密、把里面的 `loginUrl`
+   （以及 `payUrl` / `accountUrl` / `kernelUrl` / `logUrl`）改成 `http://CLIENT_IP:81`、
+   重新加密并重算 `token = md5(SdkConfig密文 + "leiting")`。
+   所以**按上面第 1 步只替换 APK 里的 IP 就够了**，服务端配置自动跟着 `CLIENT_IP` 走。
 
-   **MuMu 每次重启都会把 `/system/etc/hosts` 重置**（同时 ADB 端口也会变，
-   例如 `16384 → 16448`）。典型症状：客户端能拉到配置、能下载 `patch.zip`、
-   能停在登录框，但点登录提示网络异常；服务端 nginx 里**一条 `POST /login/index.php`
-   都没有**，aaa 日志也不动 —— 这是域名解析丢了，不是服务端挂了，也不是 APK 打包坏了。
-   实测在模拟器里 `ping loginali.leiting1.com` 会直接 `unknown host`。
-
-   一键恢复（**每次重启模拟器后跑一次**）：
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\fix_emulator_hosts.ps1
-   # 地址不是 10.0.0.240 时：
-   powershell -ExecutionPolicy Bypass -File .\fix_emulator_hosts.ps1 -ClientIp 172.29.220.175
-   ```
-
-   脚本会自动找 ADB 端口、`adb root`、把 hosts 推到 `/data/local/tmp/wd_hosts`
-   再 **bind mount** 到 `/system/etc/hosts`（MuMu 的 `/` 是块设备级只读，
-   无法 `remount rw`，只能覆盖挂载，不改动系统分区）。跑完强停并重开游戏 App 再登录。
-   该挂载在模拟器虚拟机重启前一直有效。
-
-   手工等价内容（`CLIENT_IP` 换成你的地址）：
-
-   ```
-   CLIENT_IP  static.leiting1.com login.leiting1.com loginali.leiting1.com \
-              loginsjhl.leiting1.com member.leiting1.com pay.leiting1.com payali.leiting1.com \
-              paysjhl.leiting1.com logmonitor.leiting1.com testlogin.leiting1.com \
-              testmember.leiting1.com testpay.leiting1.com testlogmonitor.leiting1.com \
-              testkernel.leiting1.com webproxy.leiting1.com helper.leiting1.com www.leiting1.com
-   ```
+   > 迁移坑记录：原包 `SdkConfig` 密文里写死的是原打包者服务器 IP `114.132.177.234`，
+   > Dockerfile 里针对**明文**做的 `114.132.177.234 → 127.0.0.1` 全局替换碰不到密文，
+   > SDK 就会连死地址、再回退到 `https://loginali.leiting1.com`；那个域名解析不到，
+   > 才会「必须改 hosts」。现在配置已自动改写，客户端直接
+   > `POST http://CLIENT_IP:81/login/login.php`（nginx 81 → 8081 → PHP），
+   > **全程不需要 DNS 劫持、模拟器 hosts、或 SDK 域名证书 SAN**。
+   > 实测：模拟器 `/system/etc/hosts` 保持系统默认两行，登录、选服、进游戏全部正常。
 3. **模拟器网络**：MuMu 桥接模式最省事（模拟器与宿主同网段，直接连 `CLIENT_IP`）；
    若保持 NAT 模式，需在 Windows 宿主机做端口转发（`netsh interface portproxy`）并放行防火墙，
    否则模拟器连不到 WSL2 里的容器。
-4. 重装 APK 后若卡「热更/删除 APK」，多半是 hosts 未生效或 81 端口不可达导致版本检查失败。
+4. 重装 APK 后若卡「热更/删除 APK」，多半是 81 端口不可达导致版本检查失败。
 
 ## 一键替换客户端 IP 脚本
 
@@ -513,13 +494,14 @@ bash server/assemble-wdzip.sh   # 合并 wd-parts → server/wd.zip（已存在�
 - 云服务器开服记得在安全组放行 81/88/443/9877/10001-10310；3306/6379 不要对外开放；
 - **host 网络模式 = 全端口直通宿主机**（含 3306/6379 和内部 RPC 端口），公网机器必须用
   防火墙/安全组封死非游戏端口；想只暴露游戏端口请用 bridge + 精确 `-p`（见端口对照表）；
-- SDK 登录域名（`*.leiting1.com`）必须劫持到服务器 IP，否则账密登录报「网络请求异常/账号不存在」。
+- SDK 登录地址由服务端下发的 `SdkConfig` 决定，`adapt.sh` 已按 `CLIENT_IP` 自动改写，
+  **不需要改模拟器 hosts / DNS 劫持**；账密登录若报「网络请求异常」，先确认
+  `CLIENT_IP` 正确且 81 端口从模拟器可达。
 
 **客户端**
 - APK 里 IP 替换推荐直接用 `patch_client_ip.py`（任意长度，DEX 会自动重编译），改完重签名；
-- 模拟器重装 APK / 清数据后，hosts 劫持会丢，需重新配置；
-- 出现「热更删除 APK 后不自动重启」：多为 81 端口 version.php 不可达（hosts/网络问题），
-  修好网络重装 APK 即可。
+- 模拟器重装 APK / 清数据后无需重新配置任何 hosts；SDK 配置每次启动从服务端重新拉取；
+- 出现「热更删除 APK 后不自动重启」：多为 81 端口 version.php 不可达，修好网络重装 APK 即可。
 
 **其他**
 - Windows 侧「插件.zip」是易语言程序，不能进 Linux 容器；其配置（`Config.data` 的
