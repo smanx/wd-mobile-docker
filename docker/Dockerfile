@@ -40,7 +40,7 @@ COPY docker/mysql56.repo /etc/yum.repos.d/mysql56.repo
 # ---------------------------------------------------------------------------
 RUN yum makecache fast && yum -y update && yum clean all && \
     yum makecache fast && yum install -y \
-        wget curl tar unzip which \
+        wget curl tar unzip zip which \
         glibc.i686 nss-softokn-freebl.i686 \
         zlib.i686 libstdc++.i686 ncurses-libs.i686 \
         openssl-libs.i686 cyrus-sasl-lib.i686 && \
@@ -91,6 +91,14 @@ RUN cd / && unzip -q /tmp/wd.zip && rm -f /tmp/wd.zip && \
     mv -f /home/daili/dogNG.conf /etc/nginx/conf.d/dogNG.conf && \
     ln -sfn /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo 'Asia/Shanghai' > /etc/timezone
+# 关键修复：去掉各服务启动脚本里的 "--enable-socket-daemon 1"。
+# 该选项会让 magic_s1 fork 一个 socket 守护进程去 bind 服务端口（如 aaa 的 10001），
+# 在容器内（pid namespace + 信号语义）会导致 bind 竞争失败：
+#   "Bind is failed. / Failed to listen on port: 10001 / AAA failed to listen on port: 10001"
+# 结果 aaa 起不来 → gs 连不上 aaa → 卡 "Try to obtain game_server_list"，
+# 游戏线 10201-10210 不监听，客户端显示“服务器维护中”。
+RUN find /home/s1 -maxdepth 2 -type f -name 'run*' -exec sed -i 's/ --enable-socket-daemon 1//g' {} + && \
+    grep -rl 'enable-socket-daemon' /home/s1 2>/dev/null | head -1 | grep . && echo "WARN: socket-daemon still present" || true
 
 # ---------------------------------------------------------------------------
 # 8. 配置文件：MySQL / Nginx / PHP-FPM / Redis / 启动脚本

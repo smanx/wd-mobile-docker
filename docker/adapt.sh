@@ -50,23 +50,56 @@ SQL
 log() { echo "[entrypoint] $(date '+%F %T') $*"; }
 log "若依适配完成（外部 druid 配置 + 90sdk 最小库）"
 
-# ---- 游戏服下发地址：保持 127.0.0.1，绝不能改成外部 IP ----
-# 关键教训：release_adb.server 的 ip/outer_ip 是【服务端内部服务互联】用的地址。
-# gs/aaa/ccs/dba 等都在同一容器内，必须用 127.0.0.1 才能互通。若改成外部 IP，
-# gs 连不上前置服务，会卡在 "Try to obtain game_server_list" / "Missing config(telnet_port)"，
-# 游戏线端口 10201-10210 不监听，客户端显示“服务器维护中”。
-# 客户端连服务器用的是 nginx 端口(81/443) 和游戏端口(10201+)，与 server 表 ip 无关。
-# 因此这里【强制保持/恢复】为 127.0.0.1（兼容历史被误改的情况）。
+# ---- 预置测试账号 admin1/admin1（避免每次重建都要手动注册）----
+# SDK 登录(/login/index.php -> api.php verify) 查 account.account 表。
+# 密码算法: strtoupper(md5(account + strtoupper(md5(pass)) + "xiaowu2023"))
+for i in $(seq 1 60); do
+    mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 && break
+    sleep 1
+done
+PWD5=$(printf 'admin1' | md5sum | awk '{print toupper($1)}')
+FINAL=$(printf 'admin1%sxiaowu2023' "$PWD5" | md5sum | awk '{print toupper($1)}')
+mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" account 2>/dev/null <<SQL && log "预置账号 admin1/admin1 完成"
+INSERT INTO account (account,password,ip,time,agent,money,pass)
+VALUES ('admin1','$FINAL','127.0.0.1',NOW(),'xiaowu','0','admin1')
+ON DUPLICATE KEY UPDATE password=VALUES(password),pass=VALUES(pass);
+SQL
+
+# ---- 游戏服下发地址：必须是【客户端可达】地址，不能是 127.0.0.1 ----
+# 关键：release_adb.server 的 ip/outer_ip 是 aaa 下发给【客户端】去连接 gs 游戏线的地址
+# （不是服务端内部互联——内部互联靠 gs 的 [Me] Name 匹配，不依赖本表 ip）。
+# 若为 127.0.0.1，客户端会连自己的回环 → "连接服务器超时"。
+# 必须设为客户端/模拟器可达的地址（CLIENT_IP）。
 for i in $(seq 1 60); do
     mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 && break
     sleep 1
 done
 if mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" \
-    -e "UPDATE release_adb.server SET ip='127.0.0.1', outer_ip='127.0.0.1'" 2>/dev/null; then
-    log "release_adb.server 内部服务地址确保为 127.0.0.1"
+    -e "UPDATE release_adb.server SET ip='127.0.0.1', outer_ip='$CLIENT_IP'" 2>/dev/null; then
+    log "release_adb.server 游戏线下发地址 → $CLIENT_IP"
 fi
 # 注意：不要创建 gddb/gsdb 等短名库。原包 loadsql 导入的库即可让 aaa/gs 正常工作；
 # 额外建库反而会干扰 aaa 的架构探测（Unknown database 告警）。
+
+# ---- 客户端选服地址 dist.lua ----
+# 客户端登录后从 patch.zip 的 patch/dist.lua 读取区服 aaa 地址，再去连该地址进大区。
+# 原包是原打包者服务器 IP（死地址），必须改成客户端可达地址 CLIENT_IP。
+if [ -f /www/wwwroot/game/atm/g-bits/patch.zip ]; then
+    if ! command -v zip >/dev/null 2>&1; then
+        (yum install -y -q zip >/dev/null 2>&1) || true
+    fi
+    rm -rf /tmp/wdpatch && mkdir -p /tmp/wdpatch && cd /tmp/wdpatch
+    unzip -o -q /www/wwwroot/game/atm/g-bits/patch.zip 2>/dev/null
+    if [ -f patch/dist.lua ]; then
+        # 把 aaa 的地址统一改为 CLIENT_IP:10001（客户端选服连接地址）
+        sed -i -E "s#aaa = \"[0-9.]+:[0-9]+\"#aaa = \"$CLIENT_IP:10001\"#g" patch/dist.lua
+        sed -i -E "s#ftpHost = \"[0-9.]+\"#ftpHost = \"$CLIENT_IP\"#g" patch/dist.lua
+        rm -f /www/wwwroot/game/atm/g-bits/patch.zip
+        zip -q -r /www/wwwroot/game/atm/g-bits/patch.zip . 2>/dev/null
+        log "dist.lua 区服地址 → $CLIENT_IP:10001"
+    fi
+    cd /wd
+fi
 
 # ---- TLS 证书（容器每次重建后 /etc 会重置，这里保证证书存在）----
 if [ ! -f /etc/nginx/ssl/wd.crt ]; then
@@ -77,12 +110,13 @@ distinguished_name = dn
 x509_extensions = v3_req
 prompt = no
 [dn]
-CN = 172.29.220.175
+CN = $CLIENT_IP
 [v3_req]
 subjectAltName = @alt
 [alt]
-IP.1 = 172.29.220.175
+IP.1 = $CLIENT_IP
 IP.2 = 172.29.220.75
+IP.3 = 172.29.220.175
 DNS.1 = static.leiting1.com
 DNS.2 = login.leiting1.com
 DNS.3 = loginali.leiting1.com
