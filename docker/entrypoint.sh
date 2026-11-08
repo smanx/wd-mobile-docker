@@ -47,7 +47,23 @@ if [ "$ready" != "1" ]; then
     exit 1
 fi
 
-if [ ! -f /wd/.db_initialized ]; then
+# ---------- decide whether this volume still needs the initial SQL import ----------
+# BUGFIX: the old marker was /wd/.db_initialized, which lives in the CONTAINER
+# layer. Every `docker run` (even with -v wd-mysql-data:/var/lib/mysql) therefore
+# looked like a first run, and loadsql.sh does DROP DATABASE + CREATE on all 11
+# business DBs -> every account / character was wiped although the volume itself
+# was perfectly intact. The marker and the detection MUST live inside the volume.
+DB_MARKER="$DATADIR/.wd_initialized"
+DATA_PRESENT=0
+[ -f "$DB_MARKER" ] && DATA_PRESENT=1
+# Back-compat: volumes created by older images have no marker but do have tables.
+if [ -f "$DATADIR/account/account.frm" ] && [ -f "$DATADIR/release_adb/server.frm" ]; then
+    DATA_PRESENT=1
+fi
+
+if [ "$DATA_PRESENT" = "1" ]; then
+    log "existing data volume detected, skip import (accounts/characters preserved)"
+else
     log "first run: set root password -> import databases -> create plugin account"
     mysqladmin --socket="$SOCK" -u root password "$MYSQL_ROOT_PASSWORD" 2>/dev/null \
         || log "root password already set (skip)"
@@ -64,14 +80,12 @@ if [ ! -f /wd/.db_initialized ]; then
         log "ERROR: database import failed repeatedly, exit"
         exit 1
     fi
-    touch /wd/.db_initialized
+    touch "$DB_MARKER"
     mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" <<SQL
 GRANT ALL PRIVILEGES ON *.* TO 'W1G=1LA*3'@'%' IDENTIFIED BY 'Hrr1dkVU8S@W1G=LA*3HwMsqtrUZWQ72n' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
     log "plugin DB account W1G=1LA*3 created (@'%', for Windows plugin on 3306)"
-else
-    log "database already initialized, skip import"
 fi
 
 # ---------- data-layer adaptation (must run while temp mysqld is alive) ----------

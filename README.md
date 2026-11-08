@@ -401,7 +401,7 @@ mysql -h127.0.0.1 -P3306 -u root -pj4Tj3vq1ih6
 
 | 原教程步骤 | Docker 镜像里的对应行为 |
 |---|---|
-| `cd /home/s1 && ./qd`（启动游戏，需 13G 内存） | 随容器自动启动，且按依赖顺序 + 端口就绪重试 |
+| `cd /home/s1 && ./qd`（启动游戏，需 8G 内存） | 随容器自动启动，且按依赖顺序 + 端口就绪重试 |
 | `cd /home/daili && sh ry.sh restart`（启动代理） | 随容器自动启动 |
 | `cd /home/s1 && ./stop`（关闭游戏） | 直接 `docker stop wd-server` 即可 |
 | `find /home -type d -name "log" -exec rm -r {} +`（清理日志） | 日志统一输出到 `/wd/logs/`，按需清理 |
@@ -459,11 +459,25 @@ bash server/assemble-wdzip.sh   # 合并 wd-parts → server/wd.zip（已存在�
 - 内存建议 ≥ 16GB（游戏进程 + MySQL buffer pool 共占约 13GB；仅验证服务可 8GB）；
 - 磁盘预留 ≥ 10GB（镜像 2GB + 数据卷 + 日志）。
 
-**数据持久化**
-- **务必挂持久卷**：`-v wd-mysql-data:/var/lib/mysql`；
-- **绝对不要 `docker rm -v` / `docker volume rm` 删数据卷**——账号、角色、充值数据全在里面；
-- `docker restart` / `stop`+`start` 数据不丢，可放心重启；只有删除卷才会丢数据；
-- 换 `CLIENT_IP` 重新 `docker run` 时**沿用同一个卷**，数据不会丢。
+**数据持久化（删容器 / 重建容器不会丢数据）**
+- **务必挂持久卷**：`-v wd-mysql-data:/var/lib/mysql`；卷里保存 MySQL 的全部数据：
+  账号、角色、物品、元宝、区服状态等；
+- **绝对不要 `docker volume rm wd-mysql-data`**：删除卷 = 删光全部账号/角色，不可恢复；
+- `docker rm -f wd-server` **不会**删除命名卷，用同一条 `docker run` 重建后数据原样保留；
+  启动日志会显示 `existing data volume detected, skip import (accounts/characters preserved)`；
+- 换 `CLIENT_IP` 重新 `docker run` 时沿用同一个卷即可；
+- 想**清档重来**：`docker rm -f wd-server && docker volume rm wd-mysql-data`，
+  再用原命令重建（全新卷自动导入初始 SQL，并预置 `admin1/admin1`）。
+
+> 已修复的历史坑：早期版本把初始化标记 `/wd/.db_initialized` 写在**容器层**，
+> 于是每次 `docker run`（哪怕卷完好）都被当成首次启动，`loadsql.sh` 的
+> `DROP DATABASE + CREATE` 把 11 个业务库清空重建 —— 卷在、数据没了。
+> 现在判断依据放在**卷内部**：`/var/lib/mysql/.wd_initialized` 标记，
+> 或卷内已有 `account/account.frm` + `release_adb/server.frm`（兼容旧卷）。
+> 实测：插入测试账号 → 删除容器 → 同卷重建 → 日志 `skip import`、账号仍在。
+
+容器层（非卷）的 `/wd/logs`、`patch.zip`、TLS 证书、`SdkConfig` 等，
+每次重建由 `adapt.sh` 自动重新生成，属于正常现象，不影响存档。
 
 **启动与运维**
 - **启动很慢，请耐心等待约 5 分钟再登录！** 容器启动后服务只是刚拉起，游戏服务器（gs）

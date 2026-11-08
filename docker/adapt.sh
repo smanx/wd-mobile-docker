@@ -60,11 +60,18 @@ for i in $(seq 1 60); do
 done
 PWD5=$(printf 'admin1' | md5sum | awk '{print toupper($1)}')
 FINAL=$(printf 'admin1%sxiaowu2023' "$PWD5" | md5sum | awk '{print toupper($1)}')
-mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" account 2>/dev/null <<SQL && log "预置账号 admin1/admin1 完成"
+# account 表主键是自增 id，account 列没有唯一索引：ON DUPLICATE KEY UPDATE
+# 永远不会触发，每次启动都会多插一条 admin1。改为显式查重，只在不存在时插入，
+# 也不覆盖用户后来改过的密码。
+if ! mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" -N \
+     -e "SELECT 1 FROM account.account WHERE account='admin1' LIMIT 1" 2>/dev/null | grep -q 1; then
+    mysql --socket="$SOCK" -u root -p"$MYSQL_ROOT_PASSWORD" account 2>/dev/null <<SQL && log "预置账号 admin1/admin1 完成"
 INSERT INTO account (account,password,ip,time,agent,money,pass)
-VALUES ('admin1','$FINAL','127.0.0.1',NOW(),'xiaowu','0','admin1')
-ON DUPLICATE KEY UPDATE password=VALUES(password),pass=VALUES(pass);
+VALUES ('admin1','$FINAL','127.0.0.1',NOW(),'xiaowu','0','admin1');
 SQL
+else
+    log "admin1 已存在，跳过预置（保留已有账号数据）"
+fi
 
 # ---- 游戏服下发地址：必须是【客户端可达】地址，不能是 127.0.0.1 ----
 # 关键：release_adb.server 的 ip/outer_ip 是 aaa 下发给【客户端】去连接 gs 游戏线的地址
