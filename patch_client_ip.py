@@ -11,19 +11,24 @@
   # 一次处理整个目录里的所有 apk / ipa
   python patch_client_ip.py --ip 172.29.220.175 --dir "Z:/downloads/baiduyun/问道手游app"
 
-  # 安卓 DEX 要求等长，iOS 可用任意长度；给安卓单独指定等长地址：
-  python patch_client_ip.py --ip 10.0.0.240 --apk-ip 172.29.220.175 wd.apk wd.ipa
+  # 任意长度都支持（不等长时脚本自动用 baksmali/smali 重编译 dex）
+  python patch_client_ip.py --ip 10.0.0.240 wd.apk
+  python patch_client_ip.py --ip 10.0.0.240 wd.ipa
+
+  # 一次处理目录里所有 apk / ipa
+  python patch_client_ip.py --ip 10.0.0.240 --dir "Z:/downloads/baiduyun/问道手游app"
 
   # 安卓自动重签名（需要 Android SDK build-tools + JDK keytool）
   python patch_client_ip.py --ip 10.0.0.240 --sign yes wd.apk
 
 实现要点（都是实测踩过的坑）：
-  1. 安卓 assets/res/PlatformConfig.luac 其实是【明文 Lua 源码】，可任意变长；
-     但 classes.dex 里的字符串常量由 string_data_item 紧密排列、由 map_list
-     固定分区，改动长度会破坏所有绝对偏移 —— Android 官方 dexdump 实测报
-     "String longer than indicated size" / "Non-zero padding before section"。
-     所以 DEX 内替换【必须等长】；不等长时脚本给出可直接执行的替代方案
-     （--apk-ip 指定等长的可达地址，如 172.29.220.175）。
+  1. 安卓 assets/res/PlatformConfig.luac 是【明文 Lua 源码】，文本替换即可。
+     classes.dex 里的字符串常量紧密排列、string_ids 要求字典序、map_list
+     固定分区，字节级替换【只能等长且保持排序】（dexdump 实测会拒绝变长）。
+     因此当新 IP 长度不同、或等长但破坏字典序时，脚本【自动】调用
+     baksmali/smali 重编译整个 dex —— 反编译成 smali 文本做普通替换，
+     再回编译成规范 dex，从而支持【任意长度】IP。
+     jar 优先取脚本同目录 tools/，缺失时自动下载缓存（需 Java）。
   2. 改过 classes.dex 必须重算 DEX 头校验，且【顺序】不能反：
      先写 sha1(data[32:]) 到 12..32，再算 adler32(data[12:]) 写到 8..12
      （checksum 覆盖范围包含 signature 字段）。否则报 bad dex magic。
@@ -45,6 +50,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import zipfile
 import zlib
 from pathlib import Path
@@ -52,6 +58,13 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
+
+# smali/baksmali fat jar（用于"任意长度 IP"时重编译 dex）。
+# 优先用脚本同目录 tools/ 下的文件；缺失时从下面的 URL 自动下载缓存。
+SMALI_JARS = {
+    "baksmali.jar": "https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar",
+    "smali.jar": "https://bitbucket.org/JesusFreke/smali/downloads/smali-2.5.2.jar",
+}
 
 # 已知的原包硬编码 IP（脚本也会自动推断，这两个只是兜底）
 KNOWN_OLD_IPS = (b"49.235.188.189", b"172.29.220.175")
@@ -220,13 +233,87 @@ def fix_dex_checksum(data: bytes) -> bytes:
     return bytes(buf)
 
 
-def patch_dex_strings(dex: bytes, old_ip: bytes, new_ip: bytes):
-    """在 classes.dex 里等长替换字符串常量中的 IP。
+def find_smali_jars():
+    """返回 (baksmali.jar, smali.jar) 路径；没有则自动下载到脚本同目录 tools/。"""
+    base = Path(__file__).resolve().parent / "tools"
+    env = os.environ.get("SMALI_TOOLS_DIR")
+    if env:
+        base = Path(env)
+    base.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    for name, url in SMALI_JARS.items():
+        p = base / name
+        if not p.exists() or p.stat().st_size < 100_000:
+            log(f"  下载 {name} ...")
+            try:
+                urllib.request.urlretrieve(url, str(p))
+            except Exception as e:
+                raise RuntimeError(
+                    f"无法下载 {name}（{url}）：{e}\n"
+                    "  可手动下载这两个 jar 放到脚本同目录的 tools/ 下，"
+                    "或设置环境变量 SMALI_TOOLS_DIR 指向存放目录。"
+                )
+        if p.stat().st_size < 100_000:
+            raise RuntimeError(f"{p} 下载不完整")
+        paths[name] = str(p)
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError("重编译 dex 需要 Java（java 不在 PATH 中）")
+    return paths["baksmali.jar"], paths["smali.jar"], java
 
-    做法：遍历 string_ids -> string_data_item（ULEB128 长度 + MUTF-8 内容 + 0x00），
-    对含 old_ip 的 item 原地写入等长的新内容，文件长度、所有绝对偏移、
-    map_list 分区全部不变，只重算 DEX 头校验。
-    返回 (新 dex, 改动的 item 数)；长度不等时抛 ValueError（见 build_changes 说明）。
+
+def rebuild_dex_with_smali(dex: bytes, old_ip: bytes, new_ip: bytes):
+    """用 baksmali/smali 重编译 dex，支持【任意长度】IP 替换。
+
+    DEX 的字符串常量紧密排列且 string_ids 要求有序，字节级替换无法改长度；
+    反编译成 smali 文本后做普通字符串替换，再回编译成规范 dex（自动处理
+    所有偏移、排序、map_list、校验）。返回新 dex 字节。
+    """
+    baksmali, smali, java = find_smali_jars()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        dexfile = root / "classes.dex"
+        dexfile.write_bytes(dex)
+        smali_dir = root / "smali"
+        out_dex = root / "classes_new.dex"
+
+        r = subprocess.run([java, "-jar", baksmali, "d", str(dexfile),
+                            "-o", str(smali_dir)],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError("baksmali 反编译失败: " + (r.stderr or r.stdout or "")[-400:])
+        files = list(smali_dir.rglob("*.smali"))
+        if not files:
+            raise RuntimeError("baksmali 未产出 smali 文件")
+
+        hits = 0
+        for f in files:
+            t = f.read_bytes()
+            if old_ip in t:
+                hits += t.count(old_ip)
+                f.write_bytes(t.replace(old_ip, new_ip))
+        if hits == 0:
+            raise RuntimeError(f"smali 里未找到旧 IP {old_ip.decode()}")
+        log(f"  smali 反编译 {len(files)} 个文件，替换 {hits} 处")
+
+        r = subprocess.run([java, "-jar", smali, "a", str(smali_dir),
+                            "-o", str(out_dex)],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise RuntimeError("smali 回编译失败: " + (r.stderr or r.stdout or "")[-400:])
+        if not out_dex.exists():
+            raise RuntimeError("smali 未生成 dex")
+        return out_dex.read_bytes()
+
+
+def patch_dex_strings(dex: bytes, old_ip: bytes, new_ip: bytes, allow_rebuild=True):
+    """替换 classes.dex 里的 IP。
+
+    等长且保持 string_ids 字典序时走快速的原地替换（文件长度、偏移全不变）；
+    否则若 allow_rebuild=True，自动用 baksmali/smali 重编译 dex 以支持任意长度。
+    返回 (新 dex, 改动的 item 数或说明字符串)。
     """
     buf = bytearray(dex)
     if buf[:4] != b"dex\n":
@@ -250,42 +337,10 @@ def patch_dex_strings(dex: bytes, old_ip: bytes, new_ip: bytes):
     if not targets:
         return dex, 0
 
-    # 变长需要重排整个 DEX 的 string_data 区并修正 map_list / 所有绝对偏移，
-    # 这不是字节替换能做到的（Android 官方 dexdump 实测会拒绝）：
-    #   "String longer than indicated size" / "Non-zero padding before section"。
-    # 因此 DEX 内替换必须等长；给出可操作的替代方案。
-    if len(new_ip) != len(old_ip):
-        raise ValueError(
-            "安卓 APK 的 classes.dex 里 IP 是编译进 DEX 的【字符串常量】，"
-            "string_data_item 紧密排列并由 map_list 固定分区，"
-            "改长度会破坏所有偏移（dexdump 实测报错），所以 DEX 内替换必须等长。\n"
-            "  旧 IP %s 是 %d 字符，你的新 IP %s 是 %d 字符。\n"
-            "  解决（无需改动任何网络配置）：给安卓指定一个等长且客户端可达的地址，\n"
-            "  例如 172.29.220.175（14 字符，WSL 自带别名，实测模拟器可连通，\n"
-            "  与 10.0.0.240 是同一台机器、服务监听 0.0.0.0，效果完全一样）：\n"
-            "    python patch_client_ip.py --ip %s --apk-ip 172.29.220.175 wd.apk wd.ipa\n"
-            "  iOS 不受此限制，仍可用 %s。\n"
-            "  若确实需要任意长度，只能用 apktool/baksmali 重编译 dex（本脚本未内置）。"
-            % (old_ip.decode(), len(old_ip), new_ip.decode(), len(new_ip),
-               new_ip.decode(), new_ip.decode())
-        )
-
-    for off, (content, cstart, cend) in targets.items():
-        nc = content.replace(old_ip, new_ip)
-        item = write_uleb128(len(nc)) + nc + b"\x00"
-        orig_end = cend + 1                      # 原 item 结束（含 0x00 终止符）
-        need = orig_end - off
-        if len(item) > need:
-            raise ValueError("DEX 字符串写入越界（意外的长度膨胀）")
-        # 填充必须用 0x00：DEX 校验器（dexdump/ART）按"遇到 0x00 即字符串结束"
-        # 来判定实际长度，若用非 0 字节填充会把填充吞进字符串，报
-        # "String longer than indicated size"。0x00 填充既保持总长度/偏移不变，
-        # 又不会被算进字符串内容。
-        item += b"\x00" * (need - len(item))
-        buf[off:orig_end] = item
-
-    # DEX 规范要求 string_ids 按 UTF-16 字典序排列（用于二分查找）。
-    # 等长替换改了字符串内容，必须确认改动项与其邻居仍有序，否则生成坏包。
+    # 判断是否需要重编译：
+    #   - 长度不等：字节级替换无法改字符串长度（dexdump 实测会拒绝）
+    #   - 等长但字典序被破坏：DEX 要求 string_ids 有序，直接替换会生成坏包
+    # 两种情况都交给 baksmali/smali 重编译（生成规范 dex，支持任意长度 IP）。
     offsets = [struct.unpack_from("<I", buf, idoff + 4 * i)[0] for i in range(nids)]
     changed_idx = [i for i, o in enumerate(offsets) if o in targets]
 
@@ -294,28 +349,41 @@ def patch_dex_strings(dex: bytes, old_ip: bytes, new_ip: bytes):
         ce = buf.find(0, cs)
         return bytes(buf[cs:ce])
 
-    for i in changed_idx:
-        cur = string_at(offsets[i])
-        if i > 0:
-            prev = string_at(offsets[i - 1])
-            if cur < prev:
-                raise ValueError(
-                    "新 IP 破坏了 DEX string_ids 的字典序（规范要求有序）：\n"
-                    "  %r 排在 %r 之前，但索引在其后。\n"
-                    "  请换一个字典序合适的等长 IP（如 172.29.220.175），"
-                    "或用 --apk-ip 单独指定；任意长度需重编译 dex。" % (cur, prev)
-                )
-        if i + 1 < nids:
-            nxt = string_at(offsets[i + 1])
-            if cur > nxt:
-                raise ValueError(
-                    "新 IP 破坏了 DEX string_ids 的字典序（规范要求有序）：\n"
-                    "  %r 排在 %r 之后，但索引在其前。\n"
-                    "  请换一个字典序合适的等长 IP（如 172.29.220.175），"
-                    "或用 --apk-ip 单独指定；任意长度需重编译 dex。" % (cur, nxt)
-                )
+    need_rebuild = len(new_ip) != len(old_ip)
+    reason = "IP 长度变化" if need_rebuild else ""
+    if not need_rebuild:
+        for i in changed_idx:
+            cur = targets[offsets[i]][0].replace(old_ip, new_ip)
+            if i > 0 and cur < string_at(offsets[i - 1]):
+                need_rebuild, reason = True, "字典序变化"
+                break
+            if i + 1 < nids and cur > string_at(offsets[i + 1]):
+                need_rebuild, reason = True, "字典序变化"
+                break
 
-    return fix_dex_checksum(bytes(buf)), len(targets)
+    if need_rebuild:
+        if not allow_rebuild:
+            raise ValueError(
+                "DEX 内替换要求等长且保持字典序；当前 %s（%s -> %s）。\n"
+                "  用 --apk-ip 指定等长且字典序合适的地址，或启用重编译。"
+                % (reason, old_ip.decode(), new_ip.decode())
+            )
+        log(f"  DEX {reason} → 用 baksmali/smali 重编译 dex（支持任意长度 IP）...")
+        new_dex = rebuild_dex_with_smali(dex, old_ip, new_ip)
+        return new_dex, "baksmali/smali 重编译 dex"
+
+    # 等长且有序：原地覆盖，文件长度、所有绝对偏移、map_list 分区全部不变
+    for off, (content, cstart, cend) in targets.items():
+        nc = content.replace(old_ip, new_ip)
+        item = write_uleb128(len(nc)) + nc + b"\x00"
+        orig_end = cend + 1                      # 原 item 结束（含 0x00 终止符）
+        need = orig_end - off
+        if len(item) > need:
+            raise ValueError("DEX 字符串写入越界（意外的长度膨胀）")
+        item += b"\x00" * (need - len(item))     # 等长时 need-len == 0
+        buf[off:orig_end] = item
+
+    return fix_dex_checksum(bytes(buf)), f"{len(targets)} 个字符串常量原地替换 + 校验重算"
 
 
 def build_changes(candidates, kind, old_ip: bytes, new_ip: bytes):
@@ -327,8 +395,8 @@ def build_changes(candidates, kind, old_ip: bytes, new_ip: bytes):
         if n == 0:
             continue
         if kind == "android" and ANDROID_DEX_RE.match(name):
-            new_data, items = patch_dex_strings(data, old_ip, new_ip)
-            report.append(f"  {name}: {n} 处 (DEX {items} 个字符串常量原地替换 + 校验重算)")
+            new_data, note = patch_dex_strings(data, old_ip, new_ip)
+            report.append(f"  {name}: {n} 处 ({note})")
         else:
             new_data = data.replace(old_ip, new_ip)
             report.append(f"  {name}: {n} 处")
@@ -601,7 +669,7 @@ def main():
     ap.add_argument("files", nargs="*", help="要处理的 .apk / .ipa 文件")
     ap.add_argument("--dir", help="目录：自动处理其中所有 .apk / .ipa")
     ap.add_argument("--ip", required=True, help="新的服务端 IP（iOS 及安卓默认值）")
-    ap.add_argument("--apk-ip", help="安卓专用 IP：必须等长（默认同 --ip）；DEX 内的 IP 无法变长替换")
+    ap.add_argument("--apk-ip", help="安卓专用 IP（默认同 --ip）；任意长度均可，不等长时自动重编译 dex")
     ap.add_argument("--old-ip", help="旧 IP（默认自动推断出现次数最多的那个）")
     ap.add_argument("--out-dir", default="client", help="输出目录（默认 client/）")
     ap.add_argument("--scan-all", action="store_true",
