@@ -114,6 +114,13 @@ RUN rm -f /etc/nginx/conf.d/default.conf
 # 用修好的页面覆盖，避免重建镜像时又从 wd.zip 解压回原始版本。
 COPY docker/gm-index.php /www/wwwroot/game/gm/index.php
 RUN chmod 777 /www/wwwroot/game/gm/index.php
+# 物品发放清单：原版 item.txt 只有 125 个常用物品，用客户端 ItemInfo.luac 里
+# 的 2139 个物品名补齐（去重、过滤会破坏 HTML / 邮件格式的特殊字符）。
+# 同时给 gm.php / index2.php 的物品下拉加 lay-search，否则 2000+ 项无法检索。
+COPY docker/gm-item.txt   /www/wwwroot/game/gm/item.txt
+COPY docker/gm-gm.php     /www/wwwroot/game/gm/gm.php
+COPY docker/gm-index2.php /www/wwwroot/game/gm/index2.php
+RUN chmod 777 /www/wwwroot/game/gm/item.txt /www/wwwroot/game/gm/gm.php /www/wwwroot/game/gm/index2.php
 COPY docker/www.conf    /etc/php-fpm.d/www.conf
 COPY docker/redis.conf  /etc/redis.conf
 COPY docker/start-services.sh docker/entrypoint.sh docker/loadsql.sh docker/adapt.sh /wd/
