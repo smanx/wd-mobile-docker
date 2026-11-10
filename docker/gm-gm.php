@@ -60,6 +60,10 @@ include_once 'config.php';;
                             <option value="武学">武学</option>
                             <option value="潜能">潜能</option>
                             <option value="充值好礼">充值好礼</option>
+						<option value="帮贡">帮贡</option>
+						<option value="帮派活力值">帮派活力值</option>
+						<option value="银元宝">银元宝</option>
+						<option value="鬼气">鬼气</option>
                         </select>
                     </div>
                     <div class="layui-form-item">
