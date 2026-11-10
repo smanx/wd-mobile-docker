@@ -190,16 +190,25 @@ include_once 'config.php';;
 
                     <div class="layui-form-item" id="cw1" style="display: none;">
                         <label class="layui-icon layui-icon-username"></label>
-                        <select name="cw1">
+                        <select name="cw1" lay-search>
                             <?php
                  $file = fopen("pet.txt", "r");
-                 while (!feof($file)) {
-                    $line = fgets($file);
-                    echo '<option value="' . $line . '">' . str_replace("\r\n", "", $line) . '</option>' . PHP_EOL;
+                 while (($line = fgets($file)) !== false) {
+                    $n = trim($line);
+                    if ($n === '' || strncmp($n, '***', 3) === 0) { continue; }
+                    $safe = htmlspecialchars($n, ENT_QUOTES, 'UTF-8');
+                    echo '<option value="' . $safe . '">' . $safe . '</option>' . PHP_EOL;
+                    if (strpos($n, '(宝宝)') !== false) {
+                        $wild1 = str_replace('(宝宝)', '(野生)', $n);
+                        $wild2 = str_replace('(宝宝)', '', $n);
+                        echo '<option value="' . htmlspecialchars($wild1, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($wild1, ENT_QUOTES, 'UTF-8') . '</option>' . PHP_EOL;
+                        echo '<option value="' . htmlspecialchars($wild2, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($wild2, ENT_QUOTES, 'UTF-8') . '</option>' . PHP_EOL;
+                    }
                  }
                  fclose($file);
                 ?>
                         </select>
+                        <input type="text" name="cw2" placeholder="或直接输入宠物名（留空则用上方选择；野生可填 xxx(野生) 或不带后缀）" autocomplete="off" class="layui-input" value="">
                     </div>
                     <div class="layui-form-item" id="cw3" style="display: none;">
                         <label class="layui-icon layui-icon-username"></label>

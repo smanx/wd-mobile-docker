@@ -120,7 +120,13 @@ RUN chmod 777 /www/wwwroot/game/gm/index.php
 COPY docker/gm-item.txt   /www/wwwroot/game/gm/item.txt
 COPY docker/gm-gm.php     /www/wwwroot/game/gm/gm.php
 COPY docker/gm-index2.php /www/wwwroot/game/gm/index2.php
-RUN chmod 777 /www/wwwroot/game/gm/item.txt /www/wwwroot/game/gm/gm.php /www/wwwroot/game/gm/index2.php
+COPY docker/gm-gmcode.php     /www/wwwroot/game/gm/gmcode.php
+COPY docker/gm-playercode.php /www/wwwroot/game/gm/playercode.php
+RUN chmod 777 /www/wwwroot/game/gm/item.txt /www/wwwroot/game/gm/gm.php /www/wwwroot/game/gm/index2.php \
+              /www/wwwroot/game/gm/gmcode.php /www/wwwroot/game/gm/playercode.php
+# 宠物发放：pet.txt 里全是「(宝宝)/(神兽)/…」后缀，没有野生宠。前端为每个 (宝宝)
+# 自动生成 (野生) 与不带后缀两个变体，并加 lay-search 支持输入筛选；另提供 cw2
+# 自定义宠物名输入框，后端优先采用它，从而可发送任意野生宠物名。
 COPY docker/www.conf    /etc/php-fpm.d/www.conf
 COPY docker/redis.conf  /etc/redis.conf
 COPY docker/start-services.sh docker/entrypoint.sh docker/loadsql.sh docker/adapt.sh /wd/
