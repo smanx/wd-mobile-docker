@@ -106,6 +106,14 @@ RUN find /home/s1 -maxdepth 2 -type f -name 'run*' -exec sed -i 's/ --enable-soc
 COPY docker/my.cnf      /etc/my.cnf
 COPY docker/nginx.conf  /etc/nginx/nginx.conf
 RUN rm -f /etc/nginx/conf.d/default.conf
+# 修复「玩家后台」tab 页（原版 wd.zip 里的 index.php 有两个问题）：
+#   1) iframe 用 ./cp、./pay 这类不带尾斜杠的目录 URL，nginx 会 301 到内部端口 8081，
+#      而 8081 未对外发布，浏览器连不上 → 切换 tab 白屏；
+#   2) 页面残留门户模板的 new Swiper(...) 初始化，但既没引 swiper.min.js、
+#      页面也没有 .content / .swiper-container 结构 → 控制台 ReferenceError。
+# 用修好的页面覆盖，避免重建镜像时又从 wd.zip 解压回原始版本。
+COPY docker/gm-index.php /www/wwwroot/game/gm/index.php
+RUN chmod 777 /www/wwwroot/game/gm/index.php
 COPY docker/www.conf    /etc/php-fpm.d/www.conf
 COPY docker/redis.conf  /etc/redis.conf
 COPY docker/start-services.sh docker/entrypoint.sh docker/loadsql.sh docker/adapt.sh /wd/
