@@ -65,6 +65,7 @@ include_once 'config.php';;
 						<option value="帮派活力值">帮派活力值</option>
 						<option value="银元宝">银元宝</option>
 						<option value="鬼气">鬼气</option>
+						<option value="帮派建设度">帮派建设度</option>
                         </select>
                     </div>
                     <div class="layui-form-item">
