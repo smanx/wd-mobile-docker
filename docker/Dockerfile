@@ -118,15 +118,19 @@ RUN chmod 777 /www/wwwroot/game/gm/index.php
 # 的 2139 个物品名补齐（去重、过滤会破坏 HTML / 邮件格式的特殊字符）。
 # 同时给 gm.php / index2.php 的物品下拉加 lay-search，否则 2000+ 项无法检索。
 COPY docker/gm-item.txt   /www/wwwroot/game/gm/item.txt
+COPY docker/gm-pet.txt    /www/wwwroot/game/gm/pet.txt
 COPY docker/gm-gm.php     /www/wwwroot/game/gm/gm.php
 COPY docker/gm-index2.php /www/wwwroot/game/gm/index2.php
 COPY docker/gm-gmcode.php     /www/wwwroot/game/gm/gmcode.php
 COPY docker/gm-playercode.php /www/wwwroot/game/gm/playercode.php
-RUN chmod 777 /www/wwwroot/game/gm/item.txt /www/wwwroot/game/gm/gm.php /www/wwwroot/game/gm/index2.php \
+RUN chmod 777 /www/wwwroot/game/gm/item.txt /www/wwwroot/game/gm/pet.txt \
+              /www/wwwroot/game/gm/gm.php /www/wwwroot/game/gm/index2.php \
               /www/wwwroot/game/gm/gmcode.php /www/wwwroot/game/gm/playercode.php
-# 宠物发放：pet.txt 里全是「(宝宝)/(神兽)/…」后缀，没有野生宠。前端为每个 (宝宝)
-# 自动生成 (野生) 与不带后缀两个变体，并加 lay-search 支持输入筛选；另提供 cw2
-# 自定义宠物名输入框，后端优先采用它，从而可发送任意野生宠物名。
+# 宠物发放：原版 pet.txt 只有 64 个特殊宠（(宝宝)/(神兽)/… 后缀）。
+# docker/gm-pet.txt 额外补入服务端 monster.list 解出的 129 个可捕捉怪物宠
+# （青蛙/松鼠/兔子/蛇/… 到 凌云/绝尘），共 206 行；前端为每个 (宝宝) 自动
+# 生成 (野生) 与裸名变体并去重，再加 lay-search 支持输入筛选；cw2 自定义名
+# 输入框可覆盖下拉，后端 gmcode.php/playercode.php 优先采用它。
 COPY docker/www.conf    /etc/php-fpm.d/www.conf
 COPY docker/redis.conf  /etc/redis.conf
 COPY docker/start-services.sh docker/entrypoint.sh docker/loadsql.sh docker/adapt.sh /wd/

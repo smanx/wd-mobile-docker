@@ -192,17 +192,22 @@ include_once 'config.php';;
                         <label class="layui-icon layui-icon-username"></label>
                         <select name="cw1" lay-search>
                             <?php
+                 $seen = array();
                  $file = fopen("pet.txt", "r");
                  while (($line = fgets($file)) !== false) {
                     $n = trim($line);
                     if ($n === '' || strncmp($n, '***', 3) === 0) { continue; }
-                    $safe = htmlspecialchars($n, ENT_QUOTES, 'UTF-8');
-                    echo '<option value="' . $safe . '">' . $safe . '</option>' . PHP_EOL;
+                    // 宝宝宠额外提供 (野生) 与不带后缀两种形态；全部去重
+                    $variants = array($n);
                     if (strpos($n, '(宝宝)') !== false) {
-                        $wild1 = str_replace('(宝宝)', '(野生)', $n);
-                        $wild2 = str_replace('(宝宝)', '', $n);
-                        echo '<option value="' . htmlspecialchars($wild1, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($wild1, ENT_QUOTES, 'UTF-8') . '</option>' . PHP_EOL;
-                        echo '<option value="' . htmlspecialchars($wild2, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($wild2, ENT_QUOTES, 'UTF-8') . '</option>' . PHP_EOL;
+                        $variants[] = str_replace('(宝宝)', '(野生)', $n);
+                        $variants[] = str_replace('(宝宝)', '', $n);
+                    }
+                    foreach ($variants as $v) {
+                        if (isset($seen[$v])) { continue; }
+                        $seen[$v] = true;
+                        $safe = htmlspecialchars($v, ENT_QUOTES, 'UTF-8');
+                        echo '<option value="' . $safe . '">' . $safe . '</option>' . PHP_EOL;
                     }
                  }
                  fclose($file);
